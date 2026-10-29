@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeftRight,
   ArrowRight,
   Check,
   CheckCircle2,
@@ -15,6 +16,7 @@ import {
   Pencil,
   Plus,
   Receipt,
+  RotateCcw,
   Scale,
   Sparkles,
   Trash2,
@@ -38,10 +40,13 @@ import {
 import { INITIAL_MEMBERS, INITIAL_TRANSACTIONS } from "@/lib/sample-data";
 import {
   CURRENCY_LIST,
-  CURRENCY_SYMBOLS,
+  FALLBACK_USD_RATES,
   computeBalancesByCurrency,
+  computeConvertedBalances,
   formatCurrency,
+  getCurrenciesWithBalance,
   getCurrencyInfo,
+  getDefaultExchangeRate,
   roundCents,
   summarizeTransaction,
 } from "@/lib/ledger";
@@ -199,17 +204,200 @@ export default function GroupBudgetPage() {
   const [notes, setNotes] = useState("");
   const [entries, setEntries] = useState<TransactionEntry[]>([]);
 
+  // Temporary currency translation state (non-destructive preview)
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [translateCurrency, setTranslateCurrency] =
+    useState<CurrencyCode>("USD");
+  const [combineAllInLedger, setCombineAllInLedger] = useState(false);
+  const [usdRates, setUsdRates] =
+    useState<Record<string, number>>(FALLBACK_USD_RATES);
+  // Per-source-currency custom conversion overrides: { [fromCode]: { base: string, target: string } }
+  const [customConversions, setCustomConversions] = useState<
+    Record<string, { base: string; target: string }>
+  >({});
+
+  // Fetch live exchange rates in background (falls back to FALLBACK_USD_RATES offline)
+  useEffect(() => {
+    let cancelled = false;
+    fetch("https://open.er-api.com/v6/latest/USD")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.rates && typeof data.rates === "object") {
+          setUsdRates((prev) => ({ ...prev, ...data.rates }));
+        }
+      })
+      .catch(() => {
+        // Ignore network errors; FALLBACK_USD_RATES will be used
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const memberMap = useMemo(() => {
     const map = new Map<string, Member>();
     members.forEach((m) => map.set(m.id, m));
     return map;
   }, [members]);
 
-  // Balances for selected currency
-  const { balances, settlements } = useMemo(
-    () => computeBalancesByCurrency(transactions, members, activeCurrency),
-    [transactions, members, activeCurrency],
+  // Only currencies that actually have balance in the ledger
+  const ledgerCurrencies = useMemo(() => {
+    const withBalance = getCurrenciesWithBalance(transactions, members);
+    if (withBalance.length > 0) return withBalance;
+    return [getCurrencyInfo(activeCurrency)];
+  }, [transactions, members, activeCurrency]);
+
+  // Ensure activeCurrency stays valid among currencies that actually have balance
+  useEffect(() => {
+    if (
+      ledgerCurrencies.length > 0 &&
+      !ledgerCurrencies.some((c) => c.code === activeCurrency)
+    ) {
+      setActiveCurrency(ledgerCurrencies[0].code);
+    }
+  }, [ledgerCurrencies, activeCurrency]);
+
+  const getDefaultPairValues = useCallback(
+    (from: CurrencyCode, to: CurrencyCode) => {
+      if (from === to) {
+        return { base: "1", target: "1" };
+      }
+      const rawRate = getDefaultExchangeRate(from, to, usdRates);
+      const baseNum = rawRate < 0.05 ? 100 : 1;
+      const toDecimals = Math.max(2, getCurrencyInfo(to).decimal_digits);
+      const targetVal = roundCents(
+        baseNum * rawRate,
+        rawRate * baseNum < 1 ? 4 : toDecimals
+      );
+      return {
+        base: String(baseNum),
+        target: String(targetVal),
+      };
+    },
+    [usdRates]
   );
+
+  const getConversionPair = useCallback(
+    (from: CurrencyCode) => {
+      const key = `${from}->${translateCurrency}`;
+      return (
+        customConversions[key] ?? getDefaultPairValues(from, translateCurrency)
+      );
+    },
+    [customConversions, translateCurrency, getDefaultPairValues]
+  );
+
+  const getRateToTarget = useCallback(
+    (from: CurrencyCode): number => {
+      if (!isTranslating) return 1;
+      const key = `${from}->${translateCurrency}`;
+      const custom = customConversions[key];
+      if (custom) {
+        const b = parseFloat(custom.base);
+        const t = parseFloat(custom.target);
+        if (b > 0 && t >= 0) {
+          return t / b;
+        }
+      }
+      return getDefaultExchangeRate(from, translateCurrency, usdRates);
+    },
+    [isTranslating, translateCurrency, customConversions, usdRates]
+  );
+
+  const updateCustomConversion = (
+    from: CurrencyCode,
+    patch: Partial<{ base: string; target: string }>
+  ) => {
+    const key = `${from}->${translateCurrency}`;
+    const current = getConversionPair(from);
+    setCustomConversions((prev) => ({
+      ...prev,
+      [key]: { ...current, ...patch },
+    }));
+  };
+
+  const resetCustomConversion = (from: CurrencyCode) => {
+    const key = `${from}->${translateCurrency}`;
+    setCustomConversions((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const handleToggleTranslate = () => {
+    if (!isTranslating) {
+      // Pick a sensible default target currency if all ledger currencies match current translateCurrency
+      if (
+        ledgerCurrencies.length === 1 &&
+        ledgerCurrencies[0].code === translateCurrency
+      ) {
+        setTranslateCurrency(
+          ledgerCurrencies[0].code === "SGD" ? "USD" : "SGD"
+        );
+      }
+      setIsTranslating(true);
+    } else {
+      setIsTranslating(false);
+      setCombineAllInLedger(false);
+    }
+  };
+
+  const formatDisplayedAmount = useCallback(
+    (amount: number, fromCurrency: CurrencyCode): string => {
+      if (!isTranslating) {
+        return formatCurrency(amount, fromCurrency);
+      }
+      const rate = getRateToTarget(fromCurrency);
+      const converted = amount * rate;
+      return formatCurrency(converted, translateCurrency);
+    },
+    [isTranslating, getRateToTarget, translateCurrency]
+  );
+
+  const isAmountTranslated = useCallback(
+    (fromCurrency: CurrencyCode): boolean => {
+      if (!isTranslating) return false;
+      const rate = getRateToTarget(fromCurrency);
+      return fromCurrency !== translateCurrency || Math.abs(rate - 1) > 1e-6;
+    },
+    [isTranslating, getRateToTarget, translateCurrency]
+  );
+
+  // Balances for selected currency (or converted when temporary translation is active)
+  const { balances, settlements } = useMemo(() => {
+    if (isTranslating) {
+      return computeConvertedBalances(
+        transactions,
+        members,
+        combineAllInLedger && ledgerCurrencies.length > 1
+          ? "ALL"
+          : activeCurrency,
+        translateCurrency,
+        getRateToTarget
+      );
+    }
+    return computeBalancesByCurrency(transactions, members, activeCurrency);
+  }, [
+    transactions,
+    members,
+    activeCurrency,
+    isTranslating,
+    combineAllInLedger,
+    ledgerCurrencies.length,
+    translateCurrency,
+    getRateToTarget,
+  ]);
+
+  const rawActiveBalances = useMemo(
+    () => computeBalancesByCurrency(transactions, members, activeCurrency),
+    [transactions, members, activeCurrency]
+  );
+  const rawBalanceByMemberId = useMemo(() => {
+    const map = new Map<string, (typeof rawActiveBalances.balances)[number]>();
+    rawActiveBalances.balances.forEach((b) => map.set(b.member.id, b));
+    return map;
+  }, [rawActiveBalances]);
 
   // Composer summary
   const draftSummary = useMemo(
@@ -680,7 +868,22 @@ export default function GroupBudgetPage() {
             </div>
           </div>
 
-          <div className='flex items-center gap-2.5'>
+          <div className='flex flex-wrap items-center gap-2.5'>
+            <button
+              type='button'
+              onClick={handleToggleTranslate}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-medium shadow-xs transition ${
+                isTranslating
+                  ? "border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+              title='Temporarily convert all displayed currencies to make sense of amounts'
+            >
+              <ArrowLeftRight className='h-3.5 w-3.5 text-indigo-600' />
+              {isTranslating
+                ? `Translating to ${translateCurrency}`
+                : "Translate Currencies"}
+            </button>
             <button
               onClick={() => openNewTransactionModal("insurance")}
               className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 shadow-xs transition hover:bg-slate-50'
@@ -698,6 +901,128 @@ export default function GroupBudgetPage() {
           </div>
         </div>
       </header>
+
+      {/* Temporary Currency Translate Banner */}
+      {isTranslating && (
+        <div className='mx-auto mt-5 max-w-6xl px-6'>
+          <div className='rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50/90 via-white to-sky-50/80 p-4 shadow-xs'>
+            <div className='flex flex-wrap items-center justify-between gap-4'>
+              <div className='flex flex-wrap items-center gap-3'>
+                <div className='flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white'>
+                  <Coins className='h-4 w-4' />
+                </div>
+                <div>
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <span className='text-xs font-bold text-slate-900'>
+                      Temporary Currency Translate
+                    </span>
+                    <span className='rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700'>
+                      Preview Only
+                    </span>
+                  </div>
+                  <p className='text-[11px] text-slate-500'>
+                    All displayed amounts are temporarily converted to help you
+                    make sense of them. Your saved data is unchanged.
+                  </p>
+                </div>
+              </div>
+
+              <div className='flex flex-wrap items-center gap-2.5'>
+                <label className='flex items-center gap-1.5 text-xs font-medium text-slate-700'>
+                  <span>Show in:</span>
+                  <select
+                    value={translateCurrency}
+                    onChange={(e) =>
+                      setTranslateCurrency(e.target.value as CurrencyCode)
+                    }
+                    className='max-w-[130px] truncate rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 font-mono text-xs font-semibold text-indigo-900 shadow-2xs focus:border-indigo-600 focus:outline-none'
+                  >
+                    {CURRENCY_LIST.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.code} ({c.symbol})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button
+                  type='button'
+                  onClick={() => {
+                    setIsTranslating(false);
+                    setCombineAllInLedger(false);
+                  }}
+                  className='inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                >
+                  <X className='h-3.5 w-3.5' />
+                  Show Original
+                </button>
+              </div>
+            </div>
+
+            {/* Editable Conversion Rates / Desired Reference Amounts */}
+            <div className='mt-3 flex flex-wrap items-center gap-3 border-t border-indigo-100/80 pt-3'>
+              <span className='text-[11px] font-semibold text-slate-600'>
+                Conversion amount (edit either side to scale):
+              </span>
+              {ledgerCurrencies.map((c) => {
+                const pair = getConversionPair(c.code);
+                const key = `${c.code}->${translateCurrency}`;
+                const isCustom = Boolean(customConversions[key]);
+                return (
+                  <div
+                    key={c.code}
+                    className='inline-flex flex-wrap items-center gap-1.5 rounded-xl border border-indigo-200/80 bg-white px-2.5 py-1 text-xs shadow-2xs'
+                  >
+                    <input
+                      type='number'
+                      min='0.0001'
+                      step='any'
+                      value={pair.base}
+                      onChange={(e) =>
+                        updateCustomConversion(c.code, {
+                          base: e.target.value,
+                        })
+                      }
+                      aria-label={`Base ${c.code} amount`}
+                      className='w-16 rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-right font-mono text-xs font-semibold text-slate-900 focus:border-indigo-600 focus:bg-white focus:outline-none'
+                    />
+                    <span className='font-mono text-[11px] font-bold text-slate-700'>
+                      {c.code}
+                    </span>
+                    <span className='text-slate-400'>=</span>
+                    <input
+                      type='number'
+                      min='0'
+                      step='any'
+                      value={pair.target}
+                      onChange={(e) =>
+                        updateCustomConversion(c.code, {
+                          target: e.target.value,
+                        })
+                      }
+                      aria-label={`Converted ${translateCurrency} amount`}
+                      className='w-20 rounded-md border border-indigo-200 bg-indigo-50/40 px-1.5 py-0.5 text-right font-mono text-xs font-semibold text-indigo-900 focus:border-indigo-600 focus:bg-white focus:outline-none'
+                    />
+                    <span className='font-mono text-[11px] font-bold text-indigo-700'>
+                      {translateCurrency}
+                    </span>
+                    {isCustom && (
+                      <button
+                        type='button'
+                        onClick={() => resetCustomConversion(c.code)}
+                        className='ml-0.5 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                        title='Reset to market exchange rate'
+                      >
+                        <RotateCcw className='h-3 w-3' />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className='mx-auto mt-8 grid max-w-6xl grid-cols-1 gap-8 px-6 lg:grid-cols-12'>
         {/* Left Column: Transactions List (8 cols) */}
@@ -725,6 +1050,7 @@ export default function GroupBudgetPage() {
           {transactions.map((tx) => {
             const summary = summarizeTransaction(tx);
             const isExpanded = !!expandedTxIds[tx.id];
+            const txTranslated = isAmountTranslated(tx.currency);
 
             return (
               <div
@@ -749,7 +1075,9 @@ export default function GroupBudgetPage() {
                           {tx.category}
                         </span>
                         <span className='rounded-md bg-amber-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-800'>
-                          {tx.currency}
+                          {txTranslated
+                            ? `${tx.currency} → ${translateCurrency}`
+                            : tx.currency}
                         </span>
                       </div>
 
@@ -782,8 +1110,19 @@ export default function GroupBudgetPage() {
                   <div className='flex items-center gap-4'>
                     <div className='text-right'>
                       <div className='text-base font-bold text-slate-900'>
-                        {formatCurrency(summary.totalPaid, tx.currency)}
+                        {txTranslated && (
+                          <span className='mr-0.5 font-normal text-indigo-500'>
+                            ≈
+                          </span>
+                        )}
+                        {formatDisplayedAmount(summary.totalPaid, tx.currency)}
                       </div>
+                      {txTranslated && (
+                        <div className='font-mono text-[10px] text-slate-400'>
+                          orig: {formatCurrency(summary.totalPaid, tx.currency)}{" "}
+                          {tx.currency}
+                        </div>
+                      )}
                       {summary.isBalanced ? (
                         <span className='inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600'>
                           <CheckCircle2 className='h-3 w-3' />
@@ -793,7 +1132,7 @@ export default function GroupBudgetPage() {
                         <span className='inline-flex items-center gap-1 text-[11px] font-medium text-amber-600'>
                           <AlertCircle className='h-3 w-3' />
                           Diff:{" "}
-                          {formatCurrency(
+                          {formatDisplayedAmount(
                             Math.abs(summary.discrepancy),
                             tx.currency,
                           )}
@@ -910,7 +1249,10 @@ export default function GroupBudgetPage() {
                             Who Paid
                           </span>
                           <span className='font-mono text-xs font-semibold text-emerald-700'>
-                            {formatCurrency(summary.totalPaid, tx.currency)}
+                            {formatDisplayedAmount(
+                              summary.totalPaid,
+                              tx.currency,
+                            )}
                           </span>
                         </div>
                         <div className='space-y-2'>
@@ -946,9 +1288,23 @@ export default function GroupBudgetPage() {
                                     </span>
                                   )}
                                 </div>
-                                <span className='font-mono font-semibold text-emerald-700'>
-                                  +{formatCurrency(entry.amount, tx.currency)}
-                                </span>
+                                <div className='text-right font-mono'>
+                                  <div className='font-semibold text-emerald-700'>
+                                    +
+                                    {formatDisplayedAmount(
+                                      entry.amount,
+                                      tx.currency,
+                                    )}
+                                  </div>
+                                  {txTranslated && (
+                                    <div className='text-[10px] text-slate-400'>
+                                      {formatCurrency(
+                                        entry.amount,
+                                        tx.currency,
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
@@ -962,7 +1318,7 @@ export default function GroupBudgetPage() {
                             How It&apos;s Split
                           </span>
                           <span className='font-mono text-xs font-semibold text-sky-700'>
-                            {formatCurrency(
+                            {formatDisplayedAmount(
                               summary.totalBenefited,
                               tx.currency,
                             )}
@@ -995,9 +1351,23 @@ export default function GroupBudgetPage() {
                                     )}
                                   </div>
                                 </div>
-                                <span className='font-mono font-semibold text-sky-700'>
-                                  -{formatCurrency(entry.amount, tx.currency)}
-                                </span>
+                                <div className='text-right font-mono'>
+                                  <div className='font-semibold text-sky-700'>
+                                    -
+                                    {formatDisplayedAmount(
+                                      entry.amount,
+                                      tx.currency,
+                                    )}
+                                  </div>
+                                  {txTranslated && (
+                                    <div className='text-[10px] text-slate-400'>
+                                      {formatCurrency(
+                                        entry.amount,
+                                        tx.currency,
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
@@ -1015,85 +1385,177 @@ export default function GroupBudgetPage() {
         <aside className='space-y-6 lg:col-span-4'>
           {/* Net Balances Card */}
           <div className='rounded-2xl border border-slate-200 bg-white p-5 shadow-xs'>
-            <div className='flex items-center justify-between border-b border-slate-100 pb-3.5'>
+            <div className='flex items-center justify-between gap-2 border-b border-slate-100 pb-3.5'>
               <div className='flex items-center gap-2'>
                 <Scale className='h-4 w-4 text-slate-700' />
                 <h2 className='text-sm font-semibold text-slate-900'>
                   Group Balances
                 </h2>
               </div>
-              <select
-                value={activeCurrency}
-                onChange={(e) =>
-                  setActiveCurrency(e.target.value as CurrencyCode)
-                }
-                className='max-w-[130px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs font-semibold text-slate-700'
-              >
-                {CURRENCY_LIST.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.code} ({c.symbol})
-                  </option>
-                ))}
-              </select>
+              <div className='flex items-center gap-1.5'>
+                <button
+                  type='button'
+                  onClick={handleToggleTranslate}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
+                    isTranslating
+                      ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                  title='Temporarily translate displayed currencies'
+                >
+                  <ArrowLeftRight className='h-3 w-3' />
+                  Translate
+                </button>
+                <select
+                  value={
+                    isTranslating &&
+                    combineAllInLedger &&
+                    ledgerCurrencies.length > 1
+                      ? "ALL"
+                      : activeCurrency
+                  }
+                  onChange={(e) => {
+                    if (e.target.value === "ALL") {
+                      setCombineAllInLedger(true);
+                    } else {
+                      setCombineAllInLedger(false);
+                      setActiveCurrency(e.target.value as CurrencyCode);
+                    }
+                  }}
+                  aria-label='Ledger currency'
+                  className='max-w-[130px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs font-semibold text-slate-700'
+                >
+                  {isTranslating && ledgerCurrencies.length > 1 && (
+                    <option value='ALL'>All ({translateCurrency})</option>
+                  )}
+                  {ledgerCurrencies.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.code} ({c.symbol})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
+
+            {isTranslating && (
+              <div className='mt-3 flex items-center justify-between rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
+                <span>
+                  Showing in <strong>{translateCurrency}</strong>
+                  {combineAllInLedger && ledgerCurrencies.length > 1
+                    ? " (all currencies combined)"
+                    : activeCurrency !== translateCurrency
+                      ? ` (from ${activeCurrency})`
+                      : ""}
+                </span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setIsTranslating(false);
+                    setCombineAllInLedger(false);
+                  }}
+                  className='font-semibold text-indigo-700 underline hover:text-indigo-900'
+                >
+                  Reset
+                </button>
+              </div>
+            )}
 
             <div className='mt-4 space-y-3'>
               {balances.map(
-                ({ member, totalPaid, totalBenefited, netBalance }) => (
-                  <div
-                    key={member.id}
-                    className='flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5'
-                  >
-                    <div className='flex items-center gap-2.5'>
-                      <span
-                        className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white ${member.avatarColor}`}
-                      >
-                        {member.name.slice(0, 1)}
-                      </span>
-                      <div>
-                        <div className='text-xs font-semibold text-slate-900'>
-                          {member.name}
-                        </div>
-                        <div className='text-[11px] text-slate-500'>
-                          Paid {formatCurrency(totalPaid, activeCurrency)} ·
-                          Used {formatCurrency(totalBenefited, activeCurrency)}
+                ({ member, totalPaid, totalBenefited, netBalance }) => {
+                  const displayCurrency = isTranslating
+                    ? translateCurrency
+                    : activeCurrency;
+                  const epsilon =
+                    0.5 * 10 ** -getCurrencyInfo(displayCurrency).decimal_digits;
+                  const rawMemberBal = rawBalanceByMemberId.get(member.id);
+                  const showOrigSubtext =
+                    isTranslating &&
+                    !(combineAllInLedger && ledgerCurrencies.length > 1) &&
+                    isAmountTranslated(activeCurrency) &&
+                    rawMemberBal &&
+                    Math.abs(rawMemberBal.netBalance) > 0.005;
+
+                  return (
+                    <div
+                      key={member.id}
+                      className='flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5'
+                    >
+                      <div className='flex items-center gap-2.5'>
+                        <span
+                          className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white ${member.avatarColor}`}
+                        >
+                          {member.name.slice(0, 1)}
+                        </span>
+                        <div>
+                          <div className='text-xs font-semibold text-slate-900'>
+                            {member.name}
+                          </div>
+                          <div className='text-[11px] text-slate-500'>
+                            Paid{" "}
+                            {formatCurrency(totalPaid, displayCurrency)} · Used{" "}
+                            {formatCurrency(totalBenefited, displayCurrency)}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className='text-right font-mono text-xs font-bold'>
-                      {netBalance > 0.01 ? (
-                        <span className='text-emerald-600'>
-                          +{formatCurrency(netBalance, activeCurrency)}
-                        </span>
-                      ) : netBalance < -0.01 ? (
-                        <span className='text-rose-600'>
-                          -
-                          {formatCurrency(Math.abs(netBalance), activeCurrency)}
-                        </span>
-                      ) : (
-                        <span className='text-slate-400'>Settled</span>
-                      )}
+                      <div className='text-right font-mono text-xs font-bold'>
+                        {netBalance > epsilon ? (
+                          <span className='text-emerald-600'>
+                            +{formatCurrency(netBalance, displayCurrency)}
+                          </span>
+                        ) : netBalance < -epsilon ? (
+                          <span className='text-rose-600'>
+                            -
+                            {formatCurrency(
+                              Math.abs(netBalance),
+                              displayCurrency,
+                            )}
+                          </span>
+                        ) : (
+                          <span className='text-slate-400'>Settled</span>
+                        )}
+                        {showOrigSubtext && rawMemberBal && (
+                          <div className='text-[10px] font-normal text-slate-400'>
+                            {rawMemberBal.netBalance > 0 ? "+" : "-"}
+                            {formatCurrency(
+                              Math.abs(rawMemberBal.netBalance),
+                              activeCurrency,
+                            )}{" "}
+                            {activeCurrency}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ),
+                  );
+                },
               )}
             </div>
 
             {/* Suggested Settlements */}
             <div className='mt-5 border-t border-slate-100 pt-4'>
               <h3 className='text-xs font-semibold uppercase tracking-wider text-slate-500'>
-                Suggested Settlements ({activeCurrency})
+                Suggested Settlements (
+                {isTranslating ? translateCurrency : activeCurrency})
               </h3>
               {settlements.length === 0 ? (
                 <p className='mt-2 text-xs text-slate-500'>
-                  Everyone is settled up in {activeCurrency}.
+                  Everyone is settled up in{" "}
+                  {isTranslating &&
+                  combineAllInLedger &&
+                  ledgerCurrencies.length > 1
+                    ? "all currencies"
+                    : activeCurrency}
+                  .
                 </p>
               ) : (
                 <div className='mt-2.5 space-y-2'>
                   {settlements.map((s, idx) => {
                     const from = memberMap.get(s.fromMemberId);
                     const to = memberMap.get(s.toMemberId);
+                    const displayCurrency = isTranslating
+                      ? translateCurrency
+                      : activeCurrency;
                     return (
                       <div
                         key={idx}
@@ -1105,7 +1567,7 @@ export default function GroupBudgetPage() {
                           <span>{to?.name}</span>
                         </div>
                         <span className='font-mono font-bold text-amber-900'>
-                          {formatCurrency(s.amount, activeCurrency)}
+                          {formatCurrency(s.amount, displayCurrency)}
                         </span>
                       </div>
                     );
