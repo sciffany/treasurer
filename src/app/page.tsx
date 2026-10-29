@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   ArrowRight,
@@ -8,9 +8,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Code2,
   Coins,
   CreditCard,
+  Download,
   KeyRound,
   Loader2,
   Pencil,
@@ -20,6 +20,7 @@ import {
   Scale,
   Sparkles,
   Trash2,
+  Upload,
   UserPlus,
   Users,
   Wallet,
@@ -39,6 +40,7 @@ import {
 } from "@/types/budget";
 import { INITIAL_MEMBERS, INITIAL_TRANSACTIONS } from "@/lib/sample-data";
 import {
+  CURRENCIES_MAP,
   CURRENCY_LIST,
   FALLBACK_USD_RATES,
   computeBalancesByCurrency,
@@ -53,7 +55,6 @@ import {
 import {
   ExecutedToolCallSummary,
   parseTransactionJson,
-  serializeTransactionToJson,
 } from "@/lib/transaction-json";
 
 const PAYMENT_METHODS: PaymentMethod[] = [
@@ -107,21 +108,8 @@ export default function GroupBudgetPage() {
   const [activeCurrency, setActiveCurrency] = useState<CurrencyCode>("SGD");
   const [isHydrated, setIsHydrated] = useState(false);
 
-  // Per-transaction inline JSON editor state on main list cards
-  const [cardJsonOpenIds, setCardJsonOpenIds] = useState<
-    Record<string, boolean>
-  >({});
-  const [cardJsonTexts, setCardJsonTexts] = useState<Record<string, string>>(
-    {},
-  );
-  const [cardJsonErrors, setCardJsonErrors] = useState<
-    Record<string, string | null>
-  >({});
-  const [cardJsonSavedIds, setCardJsonSavedIds] = useState<
-    Record<string, boolean>
-  >({});
-
-  // AI & JSON Composer state
+  // AI Composer state (hidden initially)
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [isAiGenerating, setIsAiGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -129,11 +117,12 @@ export default function GroupBudgetPage() {
   const [openAiKey, setOpenAiKey] = useState("");
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
 
-  const [isJsonPanelOpen, setIsJsonPanelOpen] = useState(true);
-  const [jsonInputText, setJsonInputText] = useState("");
-  const [isJsonDirty, setIsJsonDirty] = useState(false);
-  const [jsonError, setJsonError] = useState<string | null>(null);
-  const [jsonAppliedBadge, setJsonAppliedBadge] = useState(false);
+  // Export & Import state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [dataNotice, setDataNotice] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
 
   // Load saved state from localStorage on mount
   useEffect(() => {
@@ -413,33 +402,175 @@ export default function GroupBudgetPage() {
     [title, date, currency, category, entries],
   );
 
-  // Keep JSON input box in sync with visual draft fields unless user is editing raw JSON
-  useEffect(() => {
-    if (!isComposerOpen || isJsonDirty) return;
-    const serialized = serializeTransactionToJson(
-      {
-        title,
-        date,
-        currency,
-        category,
-        notes: notes.trim() || undefined,
-        entries,
-      },
-      members,
-    );
-    setJsonInputText(serialized);
-    setJsonError(null);
-  }, [
-    isComposerOpen,
-    isJsonDirty,
-    title,
-    date,
-    currency,
-    category,
-    notes,
-    entries,
-    members,
-  ]);
+  function showTemporaryNotice(type: "success" | "error", message: string) {
+    setDataNotice({ type, message });
+    setTimeout(() => {
+      setDataNotice((prev) => (prev?.message === message ? null : prev));
+    }, 4000);
+  }
+
+  function handleExportData() {
+    try {
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        activeCurrency,
+        members,
+        transactions,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const dateStamp = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = `treasurer-backup-${dateStamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showTemporaryNotice("success", "Saved data exported.");
+    } catch {
+      showTemporaryNotice("error", "Could not export data.");
+    }
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const raw = JSON.parse(text);
+
+      if (!raw || typeof raw !== "object") {
+        throw new Error("Invalid backup file format.");
+      }
+
+      // Case 1: Full backup object with `members` and/or `transactions`
+      if (
+        !Array.isArray(raw) &&
+        ("members" in raw || "transactions" in raw)
+      ) {
+        const obj = raw as Record<string, unknown>;
+        let importedMembers: Member[] = members;
+
+        if (Array.isArray(obj.members)) {
+          importedMembers = obj.members
+            .filter(
+              (m): m is Record<string, unknown> =>
+                Boolean(m) && typeof m === "object" && typeof (m as Record<string, unknown>).name === "string",
+            )
+            .map((m, idx) => ({
+              id:
+                typeof m.id === "string" && m.id.trim()
+                  ? m.id.trim()
+                  : `m-${Date.now()}-${idx}`,
+              name: String(m.name).trim(),
+              avatarColor:
+                typeof m.avatarColor === "string" && m.avatarColor.trim()
+                  ? m.avatarColor.trim()
+                  : AVATAR_COLORS[idx % AVATAR_COLORS.length],
+            }));
+        }
+
+        let importedTransactions: Transaction[] = transactions;
+        const extraMembersMap = new Map<string, Member>();
+
+        if (Array.isArray(obj.transactions)) {
+          importedTransactions = obj.transactions
+            .filter(
+              (tx): tx is Record<string, unknown> =>
+                Boolean(tx) && typeof tx === "object",
+            )
+            .map((tx, idx) => {
+              const parsed = parseTransactionJson(
+                JSON.stringify(tx),
+                [...importedMembers, ...Array.from(extraMembersMap.values())],
+                activeCurrency,
+              );
+              parsed.newMembersToCreate.forEach((nm) => {
+                if (!extraMembersMap.has(nm.id)) {
+                  extraMembersMap.set(nm.id, {
+                    id: nm.id,
+                    name: nm.name,
+                    avatarColor:
+                      AVATAR_COLORS[
+                        (importedMembers.length + extraMembersMap.size) %
+                          AVATAR_COLORS.length
+                      ],
+                  });
+                }
+              });
+
+              return {
+                id:
+                  typeof tx.id === "string" && tx.id.trim()
+                    ? tx.id.trim()
+                    : `tx-${Date.now()}-${idx}`,
+                title: parsed.title?.trim() || `Transaction ${idx + 1}`,
+                date: parsed.date || new Date().toISOString().slice(0, 10),
+                currency: parsed.currency || activeCurrency,
+                category: parsed.category || "Other",
+                ...(parsed.notes ? { notes: parsed.notes } : {}),
+                entries: parsed.entries,
+              };
+            });
+        }
+
+        const finalMembers = [
+          ...importedMembers,
+          ...Array.from(extraMembersMap.values()),
+        ];
+
+        setMembers(finalMembers);
+        setTransactions(importedTransactions);
+
+        if (
+          typeof obj.activeCurrency === "string" &&
+          obj.activeCurrency.toUpperCase() in CURRENCIES_MAP
+        ) {
+          setActiveCurrency(obj.activeCurrency.toUpperCase() as CurrencyCode);
+        } else if (importedTransactions[0]?.currency) {
+          setActiveCurrency(importedTransactions[0].currency);
+        }
+
+        showTemporaryNotice(
+          "success",
+          `Imported ${finalMembers.length} ${
+            finalMembers.length === 1 ? "member" : "members"
+          } and ${importedTransactions.length} ${
+            importedTransactions.length === 1 ? "transaction" : "transactions"
+          }.`,
+        );
+        return;
+      }
+
+      // Case 2: Single transaction object or array of entries
+      const parsed = parseTransactionJson(text, members, activeCurrency);
+      registerNewMembersIfNeeded(parsed.newMembersToCreate);
+      const newTx: Transaction = {
+        id: `tx-${Date.now()}`,
+        title: parsed.title?.trim() || "Imported Transaction",
+        date: parsed.date || new Date().toISOString().slice(0, 10),
+        currency: parsed.currency || activeCurrency,
+        category: parsed.category || "Other",
+        ...(parsed.notes ? { notes: parsed.notes } : {}),
+        entries: parsed.entries,
+      };
+      setTransactions((prev) => [newTx, ...prev]);
+      showTemporaryNotice("success", `Imported transaction "${newTx.title}".`);
+    } catch (err) {
+      showTemporaryNotice(
+        "error",
+        err instanceof Error
+          ? err.message
+          : "Could not read that file. Please select a valid backup file.",
+      );
+    }
+  }
 
   function registerNewMembersIfNeeded(
     newMembersToCreate: { id: string; name: string }[],
@@ -466,28 +597,16 @@ export default function GroupBudgetPage() {
     });
   }
 
-  function handleApplyJsonToDraft(customJsonText?: string) {
-    const textToParse = customJsonText ?? jsonInputText;
-    try {
-      const parsed = parseTransactionJson(textToParse, members, currency);
-      registerNewMembersIfNeeded(parsed.newMembersToCreate);
+  function handleApplyJsonToDraft(customJsonText: string) {
+    const parsed = parseTransactionJson(customJsonText, members, currency);
+    registerNewMembersIfNeeded(parsed.newMembersToCreate);
 
-      if (parsed.title !== undefined) setTitle(parsed.title);
-      if (parsed.date !== undefined) setDate(parsed.date);
-      if (parsed.currency !== undefined) setCurrency(parsed.currency);
-      if (parsed.category !== undefined) setCategory(parsed.category);
-      if (parsed.notes !== undefined) setNotes(parsed.notes);
-      setEntries(parsed.entries);
-
-      setIsJsonDirty(false);
-      setJsonError(null);
-      setJsonAppliedBadge(true);
-      setTimeout(() => setJsonAppliedBadge(false), 2500);
-    } catch (err) {
-      setJsonError(
-        err instanceof Error ? err.message : "Failed to parse JSON.",
-      );
-    }
+    if (parsed.title !== undefined) setTitle(parsed.title);
+    if (parsed.date !== undefined) setDate(parsed.date);
+    if (parsed.currency !== undefined) setCurrency(parsed.currency);
+    if (parsed.category !== undefined) setCategory(parsed.category);
+    if (parsed.notes !== undefined) setNotes(parsed.notes);
+    setEntries(parsed.entries);
   }
 
   async function handleGenerateFromAi() {
@@ -516,7 +635,7 @@ export default function GroupBudgetPage() {
         if (data?.missingApiKey) {
           setShowApiKeyInput(true);
         }
-        throw new Error(data?.error || "Failed to generate transaction JSON.");
+        throw new Error(data?.error || "Failed to auto-fill transaction.");
       }
 
       if (Array.isArray(data.newMembersToCreate)) {
@@ -528,9 +647,6 @@ export default function GroupBudgetPage() {
       }
 
       if (typeof data.serializedJson === "string") {
-        setJsonInputText(data.serializedJson);
-        setIsJsonDirty(false);
-        setIsJsonPanelOpen(true);
         handleApplyJsonToDraft(data.serializedJson);
       } else if (data.transaction) {
         const tx = data.transaction;
@@ -540,59 +656,13 @@ export default function GroupBudgetPage() {
         if (tx.category) setCategory(tx.category);
         setNotes(tx.notes ?? "");
         if (Array.isArray(tx.entries)) setEntries(tx.entries);
-        setIsJsonDirty(false);
       }
     } catch (err) {
       setAiError(
-        err instanceof Error ? err.message : "AI generation failed.",
+        err instanceof Error ? err.message : "AI auto-fill failed.",
       );
     } finally {
       setIsAiGenerating(false);
-    }
-  }
-
-  function toggleCardJsonEditor(tx: Transaction) {
-    const isCurrentlyOpen = !!cardJsonOpenIds[tx.id];
-    setCardJsonOpenIds((prev) => ({ ...prev, [tx.id]: !isCurrentlyOpen }));
-    if (!isCurrentlyOpen) {
-      setExpandedTxIds((prev) => ({ ...prev, [tx.id]: true }));
-      setCardJsonTexts((prev) => ({
-        ...prev,
-        [tx.id]: serializeTransactionToJson(tx, members),
-      }));
-      setCardJsonErrors((prev) => ({ ...prev, [tx.id]: null }));
-    }
-  }
-
-  function handleApplyCardJson(tx: Transaction) {
-    const rawText = cardJsonTexts[tx.id] ?? "";
-    try {
-      const parsed = parseTransactionJson(rawText, members, tx.currency);
-      registerNewMembersIfNeeded(parsed.newMembersToCreate);
-
-      const updatedTx: Transaction = {
-        ...tx,
-        title: parsed.title?.trim() || tx.title,
-        date: parsed.date || tx.date,
-        currency: parsed.currency || tx.currency,
-        category: parsed.category || tx.category,
-        notes: parsed.notes !== undefined ? parsed.notes : tx.notes,
-        entries: parsed.entries.filter((e) => e.amount > 0),
-      };
-
-      setTransactions((prev) =>
-        prev.map((item) => (item.id === tx.id ? updatedTx : item)),
-      );
-      setCardJsonErrors((prev) => ({ ...prev, [tx.id]: null }));
-      setCardJsonSavedIds((prev) => ({ ...prev, [tx.id]: true }));
-      setTimeout(() => {
-        setCardJsonSavedIds((prev) => ({ ...prev, [tx.id]: false }));
-      }, 2000);
-    } catch (err) {
-      setCardJsonErrors((prev) => ({
-        ...prev,
-        [tx.id]: err instanceof Error ? err.message : "Invalid JSON",
-      }));
     }
   }
 
@@ -656,10 +726,9 @@ export default function GroupBudgetPage() {
 
   function openNewTransactionModal(preset?: "grocery" | "insurance") {
     setEditingTxId(null);
+    setIsAiPanelOpen(false);
     setAiError(null);
     setAiToolCalls([]);
-    setIsJsonDirty(false);
-    setJsonError(null);
     const defaultMemberId = members[0]?.id ?? "m-alice";
 
     if (preset === "insurance") {
@@ -715,10 +784,9 @@ export default function GroupBudgetPage() {
 
   function openEditTransactionModal(tx: Transaction) {
     setEditingTxId(tx.id);
+    setIsAiPanelOpen(false);
     setAiError(null);
     setAiToolCalls([]);
-    setIsJsonDirty(false);
-    setJsonError(null);
     setTitle(tx.title);
     setDate(tx.date);
     setCurrency(tx.currency);
@@ -869,6 +937,31 @@ export default function GroupBudgetPage() {
           </div>
 
           <div className='flex flex-wrap items-center gap-2.5'>
+            <input
+              ref={fileInputRef}
+              type='file'
+              accept='.json,application/json'
+              onChange={handleImportFile}
+              className='hidden'
+            />
+            <button
+              type='button'
+              onClick={handleExportData}
+              className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition hover:bg-slate-50'
+              title='Export saved members and transactions'
+            >
+              <Download className='h-3.5 w-3.5 text-slate-600' />
+              Export
+            </button>
+            <button
+              type='button'
+              onClick={() => fileInputRef.current?.click()}
+              className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition hover:bg-slate-50'
+              title='Import saved data from a backup file'
+            >
+              <Upload className='h-3.5 w-3.5 text-slate-600' />
+              Import
+            </button>
             <button
               type='button'
               onClick={handleToggleTranslate}
@@ -901,6 +994,36 @@ export default function GroupBudgetPage() {
           </div>
         </div>
       </header>
+
+      {/* Export / Import Status Notice */}
+      {dataNotice && (
+        <div className='mx-auto mt-4 max-w-6xl px-6'>
+          <div
+            className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-2.5 text-xs font-medium shadow-2xs ${
+              dataNotice.type === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-rose-200 bg-rose-50 text-rose-800"
+            }`}
+          >
+            <div className='flex items-center gap-2'>
+              {dataNotice.type === "success" ? (
+                <CheckCircle2 className='h-4 w-4 shrink-0 text-emerald-600' />
+              ) : (
+                <AlertCircle className='h-4 w-4 shrink-0 text-rose-600' />
+              )}
+              <span>{dataNotice.message}</span>
+            </div>
+            <button
+              type='button'
+              onClick={() => setDataNotice(null)}
+              className='rounded p-0.5 opacity-70 hover:opacity-100'
+              aria-label='Dismiss notice'
+            >
+              <X className='h-3.5 w-3.5' />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Temporary Currency Translate Banner */}
       {isTranslating && (
@@ -1145,22 +1268,6 @@ export default function GroupBudgetPage() {
                         type='button'
                         onClick={(e) => {
                           e.stopPropagation();
-                          toggleCardJsonEditor(tx);
-                        }}
-                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
-                          cardJsonOpenIds[tx.id]
-                            ? "bg-slate-900 text-white"
-                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-                        }`}
-                        title='Inspect or edit JSON for this transaction'
-                      >
-                        <Code2 className='h-3.5 w-3.5' />
-                        JSON
-                      </button>
-                      <button
-                        type='button'
-                        onClick={(e) => {
-                          e.stopPropagation();
                           openEditTransactionModal(tx);
                         }}
                         className='rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900'
@@ -1192,55 +1299,6 @@ export default function GroupBudgetPage() {
                 {/* Expanded Atomic TransactionEntries (Payers vs Beneficiaries) */}
                 {isExpanded && (
                   <div className='border-t border-slate-100 bg-slate-50/60 px-5 py-4 space-y-4'>
-                    {/* Inline JSON Input for this Transaction */}
-                    {cardJsonOpenIds[tx.id] && (
-                      <div className='rounded-xl border border-slate-200 bg-slate-900 p-4 text-slate-100'>
-                        <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
-                          <div className='flex items-center gap-2'>
-                            <Code2 className='h-4 w-4 text-emerald-400' />
-                            <span className='text-xs font-semibold text-white'>
-                              Transaction JSON
-                            </span>
-                          </div>
-                          <div className='flex items-center gap-2'>
-                            {cardJsonSavedIds[tx.id] && (
-                              <span className='inline-flex items-center gap-1 rounded-md bg-emerald-500/20 px-2 py-0.5 text-[11px] font-medium text-emerald-300'>
-                                <Check className='h-3 w-3' />
-                                Applied
-                              </span>
-                            )}
-                            <button
-                              type='button'
-                              onClick={() => handleApplyCardJson(tx)}
-                              className='rounded-lg bg-emerald-500 px-3 py-1 text-xs font-semibold text-slate-950 hover:bg-emerald-400'
-                            >
-                              Apply JSON
-                            </button>
-                          </div>
-                        </div>
-                        <textarea
-                          rows={8}
-                          value={
-                            cardJsonTexts[tx.id] ??
-                            serializeTransactionToJson(tx, members)
-                          }
-                          onChange={(e) =>
-                            setCardJsonTexts((prev) => ({
-                              ...prev,
-                              [tx.id]: e.target.value,
-                            }))
-                          }
-                          className='w-full rounded-lg border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-emerald-200 focus:border-emerald-400 focus:outline-none'
-                          spellCheck={false}
-                        />
-                        {cardJsonErrors[tx.id] && (
-                          <p className='mt-2 text-xs text-rose-400'>
-                            {cardJsonErrors[tx.id]}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
                     <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
                       {/* Payer Entries Column */}
                       <div className='rounded-xl border border-emerald-200/80 bg-white p-3.5'>
@@ -1738,191 +1796,141 @@ export default function GroupBudgetPage() {
             </div>
 
             <form onSubmit={handleSaveTransaction} className='mt-5 space-y-6'>
-              {/* AI Natural Language -> Strict Composable Tools -> JSON Generator */}
-              <div className='rounded-2xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50/70 via-white to-violet-50/50 p-4 shadow-2xs'>
+              {/* Collapsible Fill with AI Section (Hidden Initially) */}
+              <div className='rounded-2xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50/70 via-white to-violet-50/50 p-3.5 shadow-2xs'>
                 <div className='flex flex-wrap items-center justify-between gap-2'>
-                  <div className='flex items-center gap-2'>
-                    <div className='flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-white'>
-                      <Wand2 className='h-3.5 w-3.5' />
-                    </div>
-                    <div>
-                      <h3 className='text-xs font-bold text-slate-900'>
-                        Fill with AI
-                      </h3>
-                      <p className='text-[11px] text-slate-500'>
-                        Describe who paid and how the bill was split, and AI
-                        will fill in the details for you.
-                      </p>
-                    </div>
-                  </div>
                   <button
                     type='button'
-                    onClick={() => setShowApiKeyInput((prev) => !prev)}
-                    className='inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50'
+                    onClick={() => setIsAiPanelOpen((prev) => !prev)}
+                    className='flex flex-1 items-center justify-between gap-2 text-left'
                   >
-                    <KeyRound className='h-3 w-3 text-slate-500' />
-                    {openAiKey ? "API Key Set" : "OpenAI Key"}
-                  </button>
-                </div>
-
-                {showApiKeyInput && (
-                  <div className='mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2.5'>
-                    <span className='text-[11px] font-medium text-slate-600'>
-                      OpenAI API Key:
+                    <div className='flex items-center gap-2'>
+                      <div className='flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-white'>
+                        <Wand2 className='h-3.5 w-3.5' />
+                      </div>
+                      <div>
+                        <h3 className='text-xs font-bold text-slate-900'>
+                          Fill with AI
+                        </h3>
+                        <p className='text-[11px] text-slate-500'>
+                          Describe who paid and how the bill was split, and AI
+                          will fill in the details for you.
+                        </p>
+                      </div>
+                    </div>
+                    <span className='inline-flex items-center gap-1 rounded-lg border border-indigo-200/80 bg-white px-2.5 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-50'>
+                      {isAiPanelOpen ? (
+                        <>
+                          Hide
+                          <ChevronUp className='h-3.5 w-3.5' />
+                        </>
+                      ) : (
+                        <>
+                          Show
+                          <ChevronDown className='h-3.5 w-3.5' />
+                        </>
+                      )}
                     </span>
-                    <input
-                      type='password'
-                      placeholder='sk-...'
-                      value={openAiKey}
-                      onChange={(e) => setOpenAiKey(e.target.value)}
-                      className='flex-1 rounded-lg border border-slate-200 px-2.5 py-1 font-mono text-xs focus:border-indigo-600 focus:outline-none'
-                    />
-                  </div>
-                )}
-
-                <div className='mt-3 flex flex-col gap-2.5 sm:flex-row'>
-                  <textarea
-                    rows={2}
-                    placeholder='e.g. Alice paid $84.50 by Credit Card for groceries; Bob had $14.50 cold brew, Charlie had $28 steak, Alice had $12 yogurt, and split the rest equally among Alice, Bob, and Charlie'
-                    value={aiPrompt}
-                    onChange={(e) => setAiPrompt(e.target.value)}
-                    className='flex-1 rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none'
-                  />
-                  <button
-                    type='button'
-                    disabled={isAiGenerating || !aiPrompt.trim()}
-                    onClick={handleGenerateFromAi}
-                    className='inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50'
-                  >
-                    {isAiGenerating ? (
-                      <>
-                        <Loader2 className='h-3.5 w-3.5 animate-spin' />
-                        Filling in...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className='h-3.5 w-3.5' />
-                        Auto-Fill with AI
-                      </>
-                    )}
                   </button>
-                </div>
 
-                {/* Example Prompt Chips */}
-                <div className='mt-2.5 flex flex-wrap items-center gap-1.5'>
-                  <span className='text-[11px] font-medium text-slate-500'>
-                    Try example:
-                  </span>
-                  {AI_EXAMPLE_PROMPTS.map((sample, idx) => (
+                  {isAiPanelOpen && (
                     <button
-                      key={idx}
                       type='button'
-                      onClick={() => setAiPrompt(sample)}
-                      className='rounded-full border border-indigo-200/80 bg-white px-2.5 py-0.5 text-[11px] text-indigo-700 hover:bg-indigo-50'
+                      onClick={() => setShowApiKeyInput((prev) => !prev)}
+                      className='inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50'
                     >
-                      Example {idx + 1}
+                      <KeyRound className='h-3 w-3 text-slate-500' />
+                      {openAiKey ? "API Key Set" : "OpenAI Key"}
                     </button>
-                  ))}
+                  )}
                 </div>
 
-                {aiError && (
-                  <div className='mt-2.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700'>
-                    {aiError}
-                  </div>
-                )}
-
-                {/* AI Summary Log */}
-                {aiToolCalls.length > 0 && (
-                  <div className='mt-3 rounded-xl border border-indigo-200/70 bg-white/90 p-3'>
-                    <div className='mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-indigo-900'>
-                      <Wrench className='h-3.5 w-3.5 text-indigo-600' />
-                      What AI filled in:
-                    </div>
-                    <div className='flex flex-wrap gap-1.5'>
-                      {aiToolCalls.map((tc, idx) => (
-                        <span
-                          key={idx}
-                          className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700'
-                        >
-                          <span>{tc.description}</span>
+                {isAiPanelOpen && (
+                  <div className='mt-3 border-t border-indigo-100/80 pt-3'>
+                    {showApiKeyInput && (
+                      <div className='mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2.5'>
+                        <span className='text-[11px] font-medium text-slate-600'>
+                          OpenAI API Key:
                         </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Transaction JSON Input / Editor */}
-              <div className='rounded-2xl border border-slate-200 bg-slate-900 p-4 text-slate-100'>
-                <div className='flex flex-wrap items-center justify-between gap-2'>
-                  <button
-                    type='button'
-                    onClick={() => setIsJsonPanelOpen((prev) => !prev)}
-                    className='flex items-center gap-2 text-left'
-                  >
-                    <Code2 className='h-4 w-4 text-emerald-400' />
-                    <div>
-                      <span className='text-xs font-bold text-white'>
-                        Transaction JSON
-                      </span>
-                      <span className='ml-2 rounded-md bg-slate-800 px-2 py-0.5 font-mono text-[10px] text-slate-300'>
-                        {isJsonDirty ? "Unsaved edits" : "Synced"}
-                      </span>
-                    </div>
-                    {isJsonPanelOpen ? (
-                      <ChevronUp className='h-4 w-4 text-slate-400' />
-                    ) : (
-                      <ChevronDown className='h-4 w-4 text-slate-400' />
+                        <input
+                          type='password'
+                          placeholder='sk-...'
+                          value={openAiKey}
+                          onChange={(e) => setOpenAiKey(e.target.value)}
+                          className='flex-1 rounded-lg border border-slate-200 px-2.5 py-1 font-mono text-xs focus:border-indigo-600 focus:outline-none'
+                        />
+                      </div>
                     )}
-                  </button>
 
-                  <div className='flex items-center gap-2'>
-                    {jsonAppliedBadge && (
-                      <span className='inline-flex items-center gap-1 rounded-md bg-emerald-500/20 px-2.5 py-1 text-[11px] font-medium text-emerald-300'>
-                        <Check className='h-3 w-3' />
-                        Synced
-                      </span>
-                    )}
-                    {isJsonDirty && (
+                    <div className='flex flex-col gap-2.5 sm:flex-row'>
+                      <textarea
+                        rows={2}
+                        placeholder='e.g. Alice paid $84.50 by Credit Card for groceries; Bob had $14.50 cold brew, Charlie had $28 steak, Alice had $12 yogurt, and split the rest equally among Alice, Bob, and Charlie'
+                        value={aiPrompt}
+                        onChange={(e) => setAiPrompt(e.target.value)}
+                        className='flex-1 rounded-xl border border-indigo-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none'
+                      />
                       <button
                         type='button'
-                        onClick={() => {
-                          setIsJsonDirty(false);
-                          setJsonError(null);
-                        }}
-                        className='rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800'
+                        disabled={isAiGenerating || !aiPrompt.trim()}
+                        onClick={handleGenerateFromAi}
+                        className='inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50'
                       >
-                        Reset
+                        {isAiGenerating ? (
+                          <>
+                            <Loader2 className='h-3.5 w-3.5 animate-spin' />
+                            Filling in...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className='h-3.5 w-3.5' />
+                            Auto-Fill with AI
+                          </>
+                        )}
                       </button>
-                    )}
-                    <button
-                      type='button'
-                      onClick={() => handleApplyJsonToDraft()}
-                      className='rounded-lg bg-emerald-500 px-3 py-1 text-xs font-semibold text-slate-950 transition hover:bg-emerald-400'
-                    >
-                      Apply JSON
-                    </button>
-                  </div>
-                </div>
+                    </div>
 
-                {isJsonPanelOpen && (
-                  <div className='mt-3'>
-                    <p className='mb-2 text-[11px] text-slate-400'>
-                      View or edit this transaction in JSON format. Changes sync
-                      directly with the form below.
-                    </p>
-                    <textarea
-                      rows={9}
-                      value={jsonInputText}
-                      onChange={(e) => {
-                        setJsonInputText(e.target.value);
-                        setIsJsonDirty(true);
-                      }}
-                      spellCheck={false}
-                      className='w-full rounded-xl border border-slate-700 bg-slate-950 p-3 font-mono text-xs text-emerald-200 focus:border-emerald-400 focus:outline-none'
-                    />
-                    {jsonError && (
-                      <p className='mt-2 text-xs text-rose-400'>{jsonError}</p>
+                    {/* Example Prompt Chips */}
+                    <div className='mt-2.5 flex flex-wrap items-center gap-1.5'>
+                      <span className='text-[11px] font-medium text-slate-500'>
+                        Try example:
+                      </span>
+                      {AI_EXAMPLE_PROMPTS.map((sample, idx) => (
+                        <button
+                          key={idx}
+                          type='button'
+                          onClick={() => setAiPrompt(sample)}
+                          className='rounded-full border border-indigo-200/80 bg-white px-2.5 py-0.5 text-[11px] text-indigo-700 hover:bg-indigo-50'
+                        >
+                          Example {idx + 1}
+                        </button>
+                      ))}
+                    </div>
+
+                    {aiError && (
+                      <div className='mt-2.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700'>
+                        {aiError}
+                      </div>
+                    )}
+
+                    {/* AI Summary Log */}
+                    {aiToolCalls.length > 0 && (
+                      <div className='mt-3 rounded-xl border border-indigo-200/70 bg-white/90 p-3'>
+                        <div className='mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-indigo-900'>
+                          <Wrench className='h-3.5 w-3.5 text-indigo-600' />
+                          What AI filled in:
+                        </div>
+                        <div className='flex flex-wrap gap-1.5'>
+                          {aiToolCalls.map((tc, idx) => (
+                            <span
+                              key={idx}
+                              className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-700'
+                            >
+                              <span>{tc.description}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
