@@ -79,6 +79,87 @@ export interface SettlementTransfer {
   amount: number;
 }
 
+export interface CounterpartyEntry {
+  otherMemberId: string;
+  type: "CREDIT" | "DEBIT";
+  amount: number;
+}
+
+export interface TransactionMemberCreditDebit {
+  member: Member;
+  paid: number;
+  benefited: number;
+  netBalance: number;
+  counterparties: CounterpartyEntry[];
+}
+
+/**
+ * Computes the credit and debit of each involved person against each other
+ * for a single transaction.
+ */
+export function computeTransactionPairwiseCreditDebit(
+  tx: Transaction,
+  members: Member[]
+): {
+  memberBreakdowns: TransactionMemberCreditDebit[];
+  settlements: SettlementTransfer[];
+} {
+  const decimals = getCurrencyInfo(tx.currency).decimal_digits;
+  const epsilon = 0.5 * 10 ** -decimals;
+
+  // Include any unknown member IDs referenced in the transaction entries
+  const knownIds = new Set(members.map((m) => m.id));
+  const allMembers: Member[] = [...members];
+  for (const entry of tx.entries) {
+    if (!knownIds.has(entry.memberId)) {
+      knownIds.add(entry.memberId);
+      allMembers.push({
+        id: entry.memberId,
+        name: entry.memberId,
+        avatarColor: "bg-slate-500",
+      });
+    }
+  }
+
+  const { balances, settlements } = computeBalancesByCurrency(
+    [{ ...tx, hidden: false }],
+    allMembers,
+    tx.currency
+  );
+
+  const counterpartiesByMember = new Map<string, CounterpartyEntry[]>();
+  for (const m of allMembers) {
+    counterpartiesByMember.set(m.id, []);
+  }
+
+  for (const s of settlements) {
+    // Creditor (toMemberId) has a CREDIT against debtor (fromMemberId)
+    counterpartiesByMember.get(s.toMemberId)?.push({
+      otherMemberId: s.fromMemberId,
+      type: "CREDIT",
+      amount: s.amount,
+    });
+    // Debtor (fromMemberId) has a DEBIT against creditor (toMemberId)
+    counterpartiesByMember.get(s.fromMemberId)?.push({
+      otherMemberId: s.toMemberId,
+      type: "DEBIT",
+      amount: s.amount,
+    });
+  }
+
+  const memberBreakdowns: TransactionMemberCreditDebit[] = balances
+    .filter((b) => b.totalPaid > epsilon || b.totalBenefited > epsilon)
+    .map((b) => ({
+      member: b.member,
+      paid: b.totalPaid,
+      benefited: b.totalBenefited,
+      netBalance: b.netBalance,
+      counterparties: counterpartiesByMember.get(b.member.id) ?? [],
+    }));
+
+  return { memberBreakdowns, settlements };
+}
+
 export function computeBalancesByCurrency(
   transactions: Transaction[],
   members: Member[],
@@ -95,6 +176,7 @@ export function computeBalancesByCurrency(
   }
 
   for (const tx of transactions) {
+    if (tx.hidden) continue;
     if (tx.currency !== currency) continue;
     for (const entry of tx.entries) {
       const record = map.get(entry.memberId);
@@ -170,6 +252,7 @@ export function getCurrenciesWithBalance(
 ): CurrencyInfo[] {
   const seenCodes = new Set<CurrencyCode>();
   for (const tx of transactions) {
+    if (tx.hidden) continue;
     if (tx.currency && CURRENCIES_MAP[tx.currency]) {
       seenCodes.add(tx.currency);
     }
@@ -220,6 +303,7 @@ export function computeConvertedBalances(
   }
 
   for (const tx of transactions) {
+    if (tx.hidden) continue;
     if (filterCurrency !== "ALL" && tx.currency !== filterCurrency) continue;
     const rate = getRateToTarget(tx.currency);
     for (const entry of tx.entries) {

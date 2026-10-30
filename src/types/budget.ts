@@ -54,5 +54,6 @@ export interface Transaction {
   currency: CurrencyCode;
   category: string;
   notes?: string;
+  hidden?: boolean;
   entries: TransactionEntry[];
 }

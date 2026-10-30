@@ -44,6 +44,7 @@ export interface SerializedTransaction {
   currency: CurrencyCode;
   category: string;
   notes?: string;
+  hidden?: boolean;
   entries: SerializedTransactionEntry[];
 }
 
@@ -53,6 +54,7 @@ export interface ParsedTransactionJsonResult {
   currency?: CurrencyCode;
   category?: string;
   notes?: string;
+  hidden?: boolean;
   entries: TransactionEntry[];
   newMembersToCreate: { id: string; name: string }[];
 }
@@ -172,6 +174,7 @@ export function serializeTransactionToJson(
     currency: CurrencyCode;
     category: string;
     notes?: string;
+    hidden?: boolean;
     entries: TransactionEntry[];
   },
   members: Member[]
@@ -183,6 +186,7 @@ export function serializeTransactionToJson(
     currency: tx.currency,
     category: tx.category,
     ...(tx.notes ? { notes: tx.notes } : {}),
+    ...(tx.hidden ? { hidden: true } : {}),
     entries: tx.entries.map((e) => ({
       id: e.id,
       role: e.role,
@@ -227,6 +231,7 @@ export function parseTransactionJson(
   let currency: CurrencyCode | undefined;
   let category: string | undefined;
   let notes: string | undefined;
+  let hidden: boolean | undefined;
 
   if (Array.isArray(raw)) {
     rawEntries = raw;
@@ -248,6 +253,9 @@ export function parseTransactionJson(
     }
     if (typeof obj.notes === "string") {
       notes = obj.notes;
+    }
+    if (typeof obj.hidden === "boolean") {
+      hidden = obj.hidden;
     }
 
     if (Array.isArray(obj.entries)) {
@@ -341,6 +349,7 @@ export function parseTransactionJson(
     currency,
     category,
     notes,
+    hidden,
     entries,
     newMembersToCreate: Array.from(pendingNewMembers.values()),
   };

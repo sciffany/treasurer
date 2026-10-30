@@ -11,6 +11,8 @@ import {
   Coins,
   CreditCard,
   Download,
+  Eye,
+  EyeOff,
   KeyRound,
   Loader2,
   Pencil,
@@ -45,6 +47,7 @@ import {
   FALLBACK_USD_RATES,
   computeBalancesByCurrency,
   computeConvertedBalances,
+  computeTransactionPairwiseCreditDebit,
   formatCurrency,
   getCurrenciesWithBalance,
   getCurrencyInfo,
@@ -105,6 +108,8 @@ export default function GroupBudgetPage() {
   const [expandedTxIds, setExpandedTxIds] = useState<Record<string, boolean>>(
     {},
   );
+  const [showPairwiseCreditDebit, setShowPairwiseCreditDebit] = useState(false);
+  const [showHiddenTransactions, setShowHiddenTransactions] = useState(false);
   const [activeCurrency, setActiveCurrency] = useState<CurrencyCode>("SGD");
   const [isHydrated, setIsHydrated] = useState(false);
 
@@ -191,6 +196,7 @@ export default function GroupBudgetPage() {
   const [currency, setCurrency] = useState<CurrencyCode>("SGD");
   const [category, setCategory] = useState("Groceries");
   const [notes, setNotes] = useState("");
+  const [draftHidden, setDraftHidden] = useState(false);
   const [entries, setEntries] = useState<TransactionEntry[]>([]);
 
   // Temporary currency translation state (non-destructive preview)
@@ -228,6 +234,19 @@ export default function GroupBudgetPage() {
     members.forEach((m) => map.set(m.id, m));
     return map;
   }, [members]);
+
+  const hiddenTransactionsCount = useMemo(
+    () => transactions.filter((t) => t.hidden).length,
+    [transactions],
+  );
+
+  const visibleTransactions = useMemo(
+    () =>
+      showHiddenTransactions
+        ? transactions
+        : transactions.filter((t) => !t.hidden),
+    [transactions, showHiddenTransactions],
+  );
 
   // Only currencies that actually have balance in the ledger
   const ledgerCurrencies = useMemo(() => {
@@ -515,6 +534,7 @@ export default function GroupBudgetPage() {
                 currency: parsed.currency || activeCurrency,
                 category: parsed.category || "Other",
                 ...(parsed.notes ? { notes: parsed.notes } : {}),
+                ...(parsed.hidden ? { hidden: true } : {}),
                 entries: parsed.entries,
               };
             });
@@ -558,6 +578,7 @@ export default function GroupBudgetPage() {
         currency: parsed.currency || activeCurrency,
         category: parsed.category || "Other",
         ...(parsed.notes ? { notes: parsed.notes } : {}),
+        ...(parsed.hidden ? { hidden: true } : {}),
         entries: parsed.entries,
       };
       setTransactions((prev) => [newTx, ...prev]);
@@ -729,6 +750,7 @@ export default function GroupBudgetPage() {
     setIsAiPanelOpen(false);
     setAiError(null);
     setAiToolCalls([]);
+    setDraftHidden(false);
     const defaultMemberId = members[0]?.id ?? "m-alice";
 
     if (preset === "insurance") {
@@ -792,6 +814,7 @@ export default function GroupBudgetPage() {
     setCurrency(tx.currency);
     setCategory(tx.category);
     setNotes(tx.notes ?? "");
+    setDraftHidden(Boolean(tx.hidden));
     setEntries(
       tx.entries.map((e) => ({
         ...e,
@@ -902,6 +925,7 @@ export default function GroupBudgetPage() {
       currency,
       category,
       notes: notes.trim() || undefined,
+      ...(draftHidden ? { hidden: true } : {}),
       entries: cleanedEntries,
     };
 
@@ -914,6 +938,12 @@ export default function GroupBudgetPage() {
     }
     setActiveCurrency(currency);
     setIsComposerOpen(false);
+  }
+
+  function handleToggleHideTransaction(id: string) {
+    setTransactions((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, hidden: !t.hidden } : t)),
+    );
   }
 
   function handleDeleteTransaction(id: string) {
@@ -1150,35 +1180,119 @@ export default function GroupBudgetPage() {
       <main className='mx-auto mt-8 grid max-w-6xl grid-cols-1 gap-8 px-6 lg:grid-cols-12'>
         {/* Left Column: Transactions List (8 cols) */}
         <section className='space-y-4 lg:col-span-8'>
-          <div className='flex items-center justify-between'>
+          <div className='flex flex-wrap items-center justify-between gap-3'>
             <div>
               <h2 className='text-base font-semibold text-slate-900'>
-                Transactions ({transactions.length})
+                Transactions ({transactions.length - hiddenTransactionsCount})
+                {hiddenTransactionsCount > 0 && (
+                  <span className='ml-2 rounded-full bg-slate-200/80 px-2 py-0.5 text-xs font-medium text-slate-600'>
+                    {hiddenTransactionsCount} hidden
+                  </span>
+                )}
               </h2>
               <p className='text-xs text-slate-500'>
                 Click any transaction to see who paid and how it was split.
               </p>
             </div>
-            {Object.values(expandedTxIds).some(Boolean) && (
+            <div className='flex flex-wrap items-center gap-2'>
               <button
                 type='button'
-                onClick={() => setExpandedTxIds({})}
-                className='rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-2xs transition hover:bg-slate-50'
+                aria-pressed={showPairwiseCreditDebit}
+                onClick={() => setShowPairwiseCreditDebit((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold shadow-2xs transition ${
+                  showPairwiseCreditDebit
+                    ? "border-violet-300 bg-violet-600 text-white hover:bg-violet-500"
+                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+                title='Toggle credit and debit of each person against each other for every transaction'
               >
-                Collapse All
+                <Scale
+                  className={`h-3.5 w-3.5 ${
+                    showPairwiseCreditDebit ? "text-white" : "text-violet-600"
+                  }`}
+                />
+                {showPairwiseCreditDebit
+                  ? "Hide Credit & Debit vs Each Other"
+                  : "Show Credit & Debit vs Each Other"}
               </button>
-            )}
+              {hiddenTransactionsCount > 0 && (
+                <button
+                  type='button'
+                  onClick={() => setShowHiddenTransactions((prev) => !prev)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium shadow-2xs transition ${
+                    showHiddenTransactions
+                      ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200/70"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {showHiddenTransactions ? (
+                    <>
+                      <EyeOff className='h-3.5 w-3.5 text-slate-600' />
+                      Hide Hidden ({hiddenTransactionsCount})
+                    </>
+                  ) : (
+                    <>
+                      <Eye className='h-3.5 w-3.5 text-slate-600' />
+                      Show Hidden ({hiddenTransactionsCount})
+                    </>
+                  )}
+                </button>
+              )}
+              {Object.values(expandedTxIds).some(Boolean) && (
+                <button
+                  type='button'
+                  onClick={() => setExpandedTxIds({})}
+                  className='rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 shadow-2xs transition hover:bg-slate-50'
+                >
+                  Collapse All
+                </button>
+              )}
+            </div>
           </div>
 
-          {transactions.map((tx) => {
+          {visibleTransactions.length === 0 && (
+            <div className='rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center'>
+              <p className='text-sm font-medium text-slate-700'>
+                {hiddenTransactionsCount > 0
+                  ? `All ${hiddenTransactionsCount} ${
+                      hiddenTransactionsCount === 1
+                        ? "transaction is"
+                        : "transactions are"
+                    } currently hidden from the ledger.`
+                  : "No transactions yet."}
+              </p>
+              {hiddenTransactionsCount > 0 && (
+                <button
+                  type='button'
+                  onClick={() => setShowHiddenTransactions(true)}
+                  className='mt-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100'
+                >
+                  <Eye className='h-3.5 w-3.5' />
+                  Show Hidden Transactions
+                </button>
+              )}
+            </div>
+          )}
+
+          {visibleTransactions.map((tx) => {
             const summary = summarizeTransaction(tx);
             const isExpanded = !!expandedTxIds[tx.id];
             const txTranslated = isAmountTranslated(tx.currency);
+            const isHidden = Boolean(tx.hidden);
+            const pairwise = showPairwiseCreditDebit
+              ? computeTransactionPairwiseCreditDebit(tx, members)
+              : null;
+            const txEpsilon =
+              0.5 * 10 ** -getCurrencyInfo(tx.currency).decimal_digits;
 
             return (
               <div
                 key={tx.id}
-                className='overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs transition'
+                className={`overflow-hidden rounded-2xl border transition ${
+                  isHidden
+                    ? "border-dashed border-slate-300 bg-slate-50/70 opacity-75"
+                    : "border-slate-200 bg-white shadow-xs"
+                }`}
               >
                 {/* Main Transaction Row */}
                 <div
@@ -1186,14 +1300,36 @@ export default function GroupBudgetPage() {
                   className='flex cursor-pointer flex-wrap items-center justify-between gap-4 px-5 py-4 transition hover:bg-slate-50/80'
                 >
                   <div className='flex items-start gap-3.5'>
-                    <div className='mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-700'>
-                      <Receipt className='h-5 w-5' />
+                    <div
+                      className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                        isHidden
+                          ? "bg-slate-200/70 text-slate-500"
+                          : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {isHidden ? (
+                        <EyeOff className='h-5 w-5' />
+                      ) : (
+                        <Receipt className='h-5 w-5' />
+                      )}
                     </div>
                     <div>
                       <div className='flex flex-wrap items-center gap-2'>
-                        <h3 className='font-semibold text-slate-900'>
+                        <h3
+                          className={`font-semibold ${
+                            isHidden
+                              ? "text-slate-600 line-through decoration-slate-400"
+                              : "text-slate-900"
+                          }`}
+                        >
                           {tx.title}
                         </h3>
+                        {isHidden && (
+                          <span className='inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600'>
+                            <EyeOff className='h-3 w-3' />
+                            Hidden from ledger
+                          </span>
+                        )}
                         <span className='rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600'>
                           {tx.category}
                         </span>
@@ -1232,7 +1368,13 @@ export default function GroupBudgetPage() {
 
                   <div className='flex items-center gap-4'>
                     <div className='text-right'>
-                      <div className='text-base font-bold text-slate-900'>
+                      <div
+                        className={`text-base font-bold ${
+                          isHidden
+                            ? "text-slate-500 line-through"
+                            : "text-slate-900"
+                        }`}
+                      >
                         {txTranslated && (
                           <span className='mr-0.5 font-normal text-indigo-500'>
                             ≈
@@ -1246,7 +1388,11 @@ export default function GroupBudgetPage() {
                           {tx.currency}
                         </div>
                       )}
-                      {summary.isBalanced ? (
+                      {isHidden ? (
+                        <span className='inline-flex items-center gap-1 text-[11px] font-medium text-slate-500'>
+                          Excluded from balances
+                        </span>
+                      ) : summary.isBalanced ? (
                         <span className='inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600'>
                           <CheckCircle2 className='h-3 w-3' />
                           Balanced
@@ -1264,6 +1410,35 @@ export default function GroupBudgetPage() {
                     </div>
 
                     <div className='flex items-center gap-1'>
+                      <button
+                        type='button'
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleHideTransaction(tx.id);
+                        }}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                          isHidden
+                            ? "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                        title={
+                          isHidden
+                            ? "Unhide transaction and include in ledger balances"
+                            : "Hide transaction from ledger and balances"
+                        }
+                      >
+                        {isHidden ? (
+                          <>
+                            <Eye className='h-3.5 w-3.5' />
+                            Unhide
+                          </>
+                        ) : (
+                          <>
+                            <EyeOff className='h-3.5 w-3.5' />
+                            Hide
+                          </>
+                        )}
+                      </button>
                       <button
                         type='button'
                         onClick={(e) => {
@@ -1295,6 +1470,183 @@ export default function GroupBudgetPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* Per-Transaction Credit & Debit Against Each Other (when toggled on) */}
+                {showPairwiseCreditDebit && pairwise && (
+                  <div className='border-t border-violet-100 bg-violet-50/40 px-5 py-3.5 space-y-3'>
+                    <div className='flex flex-wrap items-center justify-between gap-2'>
+                      <div className='flex items-center gap-1.5'>
+                        <Scale className='h-3.5 w-3.5 text-violet-600' />
+                        <span className='text-xs font-semibold uppercase tracking-wider text-violet-800'>
+                          Credit &amp; Debit Against Each Other
+                        </span>
+                      </div>
+                      {pairwise.settlements.length > 0 ? (
+                        <div className='flex flex-wrap items-center gap-1.5'>
+                          {pairwise.settlements.map((s, idx) => {
+                            const from = memberMap.get(s.fromMemberId);
+                            const to = memberMap.get(s.toMemberId);
+                            return (
+                              <span
+                                key={idx}
+                                className='inline-flex items-center gap-1 rounded-full border border-violet-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-700 shadow-2xs'
+                              >
+                                <span className='font-semibold text-rose-700'>
+                                  {from?.name ?? s.fromMemberId}
+                                </span>
+                                <ArrowRight className='h-3 w-3 text-slate-400' />
+                                <span className='font-semibold text-emerald-700'>
+                                  {to?.name ?? s.toMemberId}
+                                </span>
+                                <span className='ml-0.5 font-mono font-bold text-slate-900'>
+                                  {formatDisplayedAmount(s.amount, tx.currency)}
+                                </span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <span className='text-[11px] font-medium text-slate-500'>
+                          No inter-person credit or debit (everyone covered their own share)
+                        </span>
+                      )}
+                    </div>
+
+                    <div className='grid grid-cols-1 gap-2.5 sm:grid-cols-2'>
+                      {pairwise.memberBreakdowns.map((item) => {
+                        const isNetCreditor = item.netBalance > txEpsilon;
+                        const isNetDebtor = item.netBalance < -txEpsilon;
+                        return (
+                          <div
+                            key={item.member.id}
+                            className='rounded-xl border border-slate-200/90 bg-white p-3 shadow-2xs'
+                          >
+                            <div className='flex items-center justify-between gap-2 border-b border-slate-100 pb-2'>
+                              <div className='flex items-center gap-2 min-w-0'>
+                                <span
+                                  className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${item.member.avatarColor}`}
+                                >
+                                  {item.member.name.slice(0, 1)}
+                                </span>
+                                <div className='min-w-0'>
+                                  <div className='truncate text-xs font-bold text-slate-900'>
+                                    {item.member.name}
+                                  </div>
+                                  <div className='text-[10px] text-slate-500'>
+                                    Paid{" "}
+                                    {formatDisplayedAmount(
+                                      item.paid,
+                                      tx.currency,
+                                    )}{" "}
+                                    · Share{" "}
+                                    {formatDisplayedAmount(
+                                      item.benefited,
+                                      tx.currency,
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className='text-right font-mono text-xs font-bold shrink-0'>
+                                {isNetCreditor ? (
+                                  <span className='inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-emerald-700'>
+                                    Credit +
+                                    {formatDisplayedAmount(
+                                      item.netBalance,
+                                      tx.currency,
+                                    )}
+                                  </span>
+                                ) : isNetDebtor ? (
+                                  <span className='inline-flex items-center rounded-md bg-rose-50 px-2 py-0.5 text-rose-700'>
+                                    Debit -
+                                    {formatDisplayedAmount(
+                                      Math.abs(item.netBalance),
+                                      tx.currency,
+                                    )}
+                                  </span>
+                                ) : (
+                                  <span className='inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600'>
+                                    Even ({formatDisplayedAmount(0, tx.currency)})
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className='mt-2 space-y-1.5'>
+                              {item.counterparties.length === 0 ? (
+                                <div className='text-[11px] text-slate-400'>
+                                  Covered own share — no credit or debit against others
+                                </div>
+                              ) : (
+                                item.counterparties.map((cp, cIdx) => {
+                                  const other = memberMap.get(cp.otherMemberId);
+                                  const isCredit = cp.type === "CREDIT";
+                                  return (
+                                    <div
+                                      key={cIdx}
+                                      className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-xs ${
+                                        isCredit
+                                          ? "bg-emerald-50/70 text-emerald-900"
+                                          : "bg-rose-50/70 text-rose-900"
+                                      }`}
+                                    >
+                                      <div className='flex items-center gap-1.5 min-w-0'>
+                                        <span
+                                          className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white ${
+                                            other?.avatarColor ?? "bg-slate-500"
+                                          }`}
+                                        >
+                                          {other?.name.slice(0, 1) ?? "?"}
+                                        </span>
+                                        <span className='truncate text-[11px] font-medium'>
+                                          {isCredit ? (
+                                            <>
+                                              Credit from{" "}
+                                              <strong className='font-semibold'>
+                                                {other?.name ?? cp.otherMemberId}
+                                              </strong>
+                                            </>
+                                          ) : (
+                                            <>
+                                              Debit to{" "}
+                                              <strong className='font-semibold'>
+                                                {other?.name ?? cp.otherMemberId}
+                                              </strong>
+                                            </>
+                                          )}
+                                        </span>
+                                      </div>
+                                      <div className='text-right font-mono text-xs font-bold shrink-0'>
+                                        <span
+                                          className={
+                                            isCredit
+                                              ? "text-emerald-700"
+                                              : "text-rose-700"
+                                          }
+                                        >
+                                          {isCredit ? "+" : "-"}
+                                          {formatDisplayedAmount(
+                                            cp.amount,
+                                            tx.currency,
+                                          )}
+                                        </span>
+                                        {txTranslated && (
+                                          <span className='ml-1 text-[10px] font-normal text-slate-400'>
+                                            ({formatCurrency(cp.amount, tx.currency)})
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* Expanded Atomic TransactionEntries (Payers vs Beneficiaries) */}
                 {isExpanded && (
@@ -2014,6 +2366,20 @@ export default function GroupBudgetPage() {
                   />
                 </div>
               </div>
+
+              <label className='inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100/70'>
+                <input
+                  type='checkbox'
+                  checked={draftHidden}
+                  onChange={(e) => setDraftHidden(e.target.checked)}
+                  className='h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900'
+                />
+                <EyeOff className='h-3.5 w-3.5 text-slate-500' />
+                <span>
+                  Hide this transaction from the ledger (excludes it from Group
+                  Balances &amp; Settlements)
+                </span>
+              </label>
 
               {/* Quick Smart Actions Bar */}
               <div className='flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5'>
