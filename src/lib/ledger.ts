@@ -40,6 +40,31 @@ export interface TransactionSummary {
   isBalanced: boolean;
 }
 
+/**
+ * Determines whether a transaction is solely marked as an exchange
+ * (e.g., currency exchange / peer-to-peer transfer not paid to a merchant).
+ */
+export function isExchangeTransaction(tx: Transaction): boolean {
+  if (typeof tx.isExchange === "boolean") {
+    return tx.isExchange;
+  }
+  const cat = (tx.category ?? "").trim().toLowerCase();
+  if (cat === "exchange" || cat === "currency exchange") {
+    return true;
+  }
+  const title = (tx.title ?? "").trim();
+  if (/\bexchange\b/i.test(title)) {
+    return true;
+  }
+  if (
+    tx.entries.length > 0 &&
+    tx.entries.every((e) => Boolean(e.label && /\bexchange\b/i.test(e.label)))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function summarizeTransaction(tx: Transaction): TransactionSummary {
   const decimals = getCurrencyInfo(tx.currency).decimal_digits;
   const epsilon = 0.5 * 10 ** -decimals;
@@ -369,6 +394,50 @@ export function computeConvertedBalances(
   }
 
   return { balances, settlements };
+}
+
+/**
+ * Computes each member's expenditure (Paid & Used) for a single currency,
+ * excluding transactions marked as an exchange (not paid to a merchant).
+ */
+export function computeExpenditureByCurrency(
+  transactions: Transaction[],
+  members: Member[],
+  currency: CurrencyCode
+): {
+  balances: MemberBalance[];
+  settlements: SettlementTransfer[];
+} {
+  const merchantTransactions = transactions.filter(
+    (tx) => !isExchangeTransaction(tx)
+  );
+  return computeBalancesByCurrency(merchantTransactions, members, currency);
+}
+
+/**
+ * Computes each member's converted expenditure (Paid & Used) across one or all currencies,
+ * excluding transactions marked as an exchange (not paid to a merchant).
+ */
+export function computeConvertedExpenditure(
+  transactions: Transaction[],
+  members: Member[],
+  filterCurrency: CurrencyCode | "ALL",
+  targetCurrency: CurrencyCode,
+  getRateToTarget: (from: CurrencyCode) => number
+): {
+  balances: MemberBalance[];
+  settlements: SettlementTransfer[];
+} {
+  const merchantTransactions = transactions.filter(
+    (tx) => !isExchangeTransaction(tx)
+  );
+  return computeConvertedBalances(
+    merchantTransactions,
+    members,
+    filterCurrency,
+    targetCurrency,
+    getRateToTarget
+  );
 }
 
 /**

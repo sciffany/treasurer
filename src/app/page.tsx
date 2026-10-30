@@ -47,11 +47,14 @@ import {
   FALLBACK_USD_RATES,
   computeBalancesByCurrency,
   computeConvertedBalances,
+  computeConvertedExpenditure,
+  computeExpenditureByCurrency,
   computeTransactionPairwiseCreditDebit,
   formatCurrency,
   getCurrenciesWithBalance,
   getCurrencyInfo,
   getDefaultExchangeRate,
+  isExchangeTransaction,
   roundCents,
   summarizeTransaction,
 } from "@/lib/ledger";
@@ -76,6 +79,7 @@ const CATEGORIES = [
   "Transport",
   "Utilities",
   "Entertainment",
+  "Exchange",
   "Other",
 ];
 const AVATAR_COLORS = [
@@ -197,6 +201,7 @@ export default function GroupBudgetPage() {
   const [category, setCategory] = useState("Groceries");
   const [notes, setNotes] = useState("");
   const [draftHidden, setDraftHidden] = useState(false);
+  const [draftIsExchange, setDraftIsExchange] = useState(false);
   const [entries, setEntries] = useState<TransactionEntry[]>([]);
 
   // Temporary currency translation state (non-destructive preview)
@@ -407,6 +412,77 @@ export default function GroupBudgetPage() {
     return map;
   }, [rawActiveBalances]);
 
+  // Group Expenditure (Paid X · Used Y excluding exchange transactions not paid to a merchant)
+  const { balances: expenditures } = useMemo(() => {
+    if (isTranslating) {
+      return computeConvertedExpenditure(
+        transactions,
+        members,
+        combineAllInLedger && ledgerCurrencies.length > 1
+          ? "ALL"
+          : activeCurrency,
+        translateCurrency,
+        getRateToTarget
+      );
+    }
+    return computeExpenditureByCurrency(transactions, members, activeCurrency);
+  }, [
+    transactions,
+    members,
+    activeCurrency,
+    isTranslating,
+    combineAllInLedger,
+    ledgerCurrencies.length,
+    translateCurrency,
+    getRateToTarget,
+  ]);
+
+  const rawActiveExpenditures = useMemo(
+    () => computeExpenditureByCurrency(transactions, members, activeCurrency),
+    [transactions, members, activeCurrency]
+  );
+  const rawExpenditureByMemberId = useMemo(() => {
+    const map = new Map<
+      string,
+      (typeof rawActiveExpenditures.balances)[number]
+    >();
+    rawActiveExpenditures.balances.forEach((b) => map.set(b.member.id, b));
+    return map;
+  }, [rawActiveExpenditures]);
+
+  const totalGroupExpenditure = useMemo(() => {
+    const displayCurrency = isTranslating ? translateCurrency : activeCurrency;
+    const decimals = getCurrencyInfo(displayCurrency).decimal_digits;
+    const paid = roundCents(
+      expenditures.reduce((sum, b) => sum + b.totalPaid, 0),
+      decimals
+    );
+    const used = roundCents(
+      expenditures.reduce((sum, b) => sum + b.totalBenefited, 0),
+      decimals
+    );
+    return { paid, used };
+  }, [expenditures, isTranslating, translateCurrency, activeCurrency]);
+
+  const excludedExchangeCount = useMemo(() => {
+    return transactions.filter((tx) => {
+      if (tx.hidden) return false;
+      if (
+        !(isTranslating && combineAllInLedger && ledgerCurrencies.length > 1) &&
+        tx.currency !== activeCurrency
+      ) {
+        return false;
+      }
+      return isExchangeTransaction(tx);
+    }).length;
+  }, [
+    transactions,
+    isTranslating,
+    combineAllInLedger,
+    ledgerCurrencies.length,
+    activeCurrency,
+  ]);
+
   // Composer summary
   const draftSummary = useMemo(
     () =>
@@ -535,6 +611,9 @@ export default function GroupBudgetPage() {
                 category: parsed.category || "Other",
                 ...(parsed.notes ? { notes: parsed.notes } : {}),
                 ...(parsed.hidden ? { hidden: true } : {}),
+                ...(typeof parsed.isExchange === "boolean"
+                  ? { isExchange: parsed.isExchange }
+                  : {}),
                 entries: parsed.entries,
               };
             });
@@ -579,6 +658,9 @@ export default function GroupBudgetPage() {
         category: parsed.category || "Other",
         ...(parsed.notes ? { notes: parsed.notes } : {}),
         ...(parsed.hidden ? { hidden: true } : {}),
+        ...(typeof parsed.isExchange === "boolean"
+          ? { isExchange: parsed.isExchange }
+          : {}),
         entries: parsed.entries,
       };
       setTransactions((prev) => [newTx, ...prev]);
@@ -627,6 +709,9 @@ export default function GroupBudgetPage() {
     if (parsed.currency !== undefined) setCurrency(parsed.currency);
     if (parsed.category !== undefined) setCategory(parsed.category);
     if (parsed.notes !== undefined) setNotes(parsed.notes);
+    if (typeof parsed.isExchange === "boolean") {
+      setDraftIsExchange(parsed.isExchange);
+    }
     setEntries(parsed.entries);
   }
 
@@ -751,6 +836,7 @@ export default function GroupBudgetPage() {
     setAiError(null);
     setAiToolCalls([]);
     setDraftHidden(false);
+    setDraftIsExchange(false);
     const defaultMemberId = members[0]?.id ?? "m-alice";
 
     if (preset === "insurance") {
@@ -815,6 +901,7 @@ export default function GroupBudgetPage() {
     setCategory(tx.category);
     setNotes(tx.notes ?? "");
     setDraftHidden(Boolean(tx.hidden));
+    setDraftIsExchange(isExchangeTransaction(tx));
     setEntries(
       tx.entries.map((e) => ({
         ...e,
@@ -926,6 +1013,7 @@ export default function GroupBudgetPage() {
       category,
       notes: notes.trim() || undefined,
       ...(draftHidden ? { hidden: true } : {}),
+      isExchange: draftIsExchange,
       entries: cleanedEntries,
     };
 
@@ -943,6 +1031,14 @@ export default function GroupBudgetPage() {
   function handleToggleHideTransaction(id: string) {
     setTransactions((prev) =>
       prev.map((t) => (t.id === id ? { ...t, hidden: !t.hidden } : t)),
+    );
+  }
+
+  function handleToggleExchangeTransaction(id: string) {
+    setTransactions((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, isExchange: !isExchangeTransaction(t) } : t,
+      ),
     );
   }
 
@@ -1279,6 +1375,7 @@ export default function GroupBudgetPage() {
             const isExpanded = !!expandedTxIds[tx.id];
             const txTranslated = isAmountTranslated(tx.currency);
             const isHidden = Boolean(tx.hidden);
+            const isExchange = isExchangeTransaction(tx);
             const pairwise = showPairwiseCreditDebit
               ? computeTransactionPairwiseCreditDebit(tx, members)
               : null;
@@ -1304,11 +1401,15 @@ export default function GroupBudgetPage() {
                       className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
                         isHidden
                           ? "bg-slate-200/70 text-slate-500"
-                          : "bg-slate-100 text-slate-700"
+                          : isExchange
+                            ? "bg-indigo-50 text-indigo-600"
+                            : "bg-slate-100 text-slate-700"
                       }`}
                     >
                       {isHidden ? (
                         <EyeOff className='h-5 w-5' />
+                      ) : isExchange ? (
+                        <ArrowLeftRight className='h-5 w-5' />
                       ) : (
                         <Receipt className='h-5 w-5' />
                       )}
@@ -1328,6 +1429,12 @@ export default function GroupBudgetPage() {
                           <span className='inline-flex items-center gap-1 rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600'>
                             <EyeOff className='h-3 w-3' />
                             Hidden from ledger
+                          </span>
+                        )}
+                        {isExchange && (
+                          <span className='inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700'>
+                            <ArrowLeftRight className='h-3 w-3' />
+                            Exchange · Not merchant spend
                           </span>
                         )}
                         <span className='rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600'>
@@ -1410,6 +1517,26 @@ export default function GroupBudgetPage() {
                     </div>
 
                     <div className='flex items-center gap-1'>
+                      <button
+                        type='button'
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleToggleExchangeTransaction(tx.id);
+                        }}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
+                          isExchange
+                            ? "border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                            : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                        }`}
+                        title={
+                          isExchange
+                            ? "Marked as an exchange (excluded from Group Expenditure). Click to count as merchant expenditure."
+                            : "Mark as an exchange not paid to a merchant (exclude from Group Expenditure)"
+                        }
+                      >
+                        <ArrowLeftRight className='h-3.5 w-3.5' />
+                        Exchange
+                      </button>
                       <button
                         type='button'
                         onClick={(e) => {
@@ -1791,8 +1918,191 @@ export default function GroupBudgetPage() {
           })}
         </section>
 
-        {/* Right Column: Group Members, Net Balances & Settlements (4 cols) */}
+        {/* Right Column: Group Expenditure, Net Balances & Group Members (4 cols) */}
         <aside className='space-y-6 lg:col-span-4'>
+          {/* Group Expenditure Card */}
+          <div className='rounded-2xl border border-slate-200 bg-white p-5 shadow-xs'>
+            <div className='flex items-center justify-between gap-2 border-b border-slate-100 pb-3.5'>
+              <div className='flex items-center gap-2'>
+                <Receipt className='h-4 w-4 text-slate-700' />
+                <h2 className='text-sm font-semibold text-slate-900'>
+                  Group Expenditure
+                </h2>
+              </div>
+              <div className='flex items-center gap-1.5'>
+                <button
+                  type='button'
+                  onClick={handleToggleTranslate}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
+                    isTranslating
+                      ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  }`}
+                  title='Temporarily translate displayed currencies'
+                >
+                  <ArrowLeftRight className='h-3 w-3' />
+                  Translate
+                </button>
+                <select
+                  value={
+                    isTranslating &&
+                    combineAllInLedger &&
+                    ledgerCurrencies.length > 1
+                      ? "ALL"
+                      : activeCurrency
+                  }
+                  onChange={(e) => {
+                    if (e.target.value === "ALL") {
+                      setCombineAllInLedger(true);
+                    } else {
+                      setCombineAllInLedger(false);
+                      setActiveCurrency(e.target.value as CurrencyCode);
+                    }
+                  }}
+                  aria-label='Expenditure currency'
+                  className='max-w-[130px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs font-semibold text-slate-700'
+                >
+                  {isTranslating && ledgerCurrencies.length > 1 && (
+                    <option value='ALL'>All ({translateCurrency})</option>
+                  )}
+                  {ledgerCurrencies.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.code} ({c.symbol})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <p className='mt-2.5 text-[11px] text-slate-500'>
+              Merchant spending only — excludes transactions marked solely as an
+              exchange
+              {excludedExchangeCount > 0
+                ? ` (${excludedExchangeCount} excluded)`
+                : "."}
+            </p>
+
+            {isTranslating && (
+              <div className='mt-2.5 flex items-center justify-between rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
+                <span>
+                  Showing in <strong>{translateCurrency}</strong>
+                  {combineAllInLedger && ledgerCurrencies.length > 1
+                    ? " (all currencies combined)"
+                    : activeCurrency !== translateCurrency
+                      ? ` (from ${activeCurrency})`
+                      : ""}
+                </span>
+                <button
+                  type='button'
+                  onClick={() => {
+                    setIsTranslating(false);
+                    setCombineAllInLedger(false);
+                  }}
+                  className='font-semibold text-indigo-700 underline hover:text-indigo-900'
+                >
+                  Reset
+                </button>
+              </div>
+            )}
+
+            <div className='mt-3.5 space-y-3'>
+              {expenditures.map(
+                ({ member, totalPaid, totalBenefited, netBalance }) => {
+                  const displayCurrency = isTranslating
+                    ? translateCurrency
+                    : activeCurrency;
+                  const epsilon =
+                    0.5 * 10 ** -getCurrencyInfo(displayCurrency).decimal_digits;
+                  const rawMemberExp = rawExpenditureByMemberId.get(member.id);
+                  const showOrigSubtext =
+                    isTranslating &&
+                    !(combineAllInLedger && ledgerCurrencies.length > 1) &&
+                    isAmountTranslated(activeCurrency) &&
+                    rawMemberExp &&
+                    (rawMemberExp.totalPaid > 0.005 ||
+                      rawMemberExp.totalBenefited > 0.005);
+
+                  return (
+                    <div
+                      key={member.id}
+                      className='flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5'
+                    >
+                      <div className='flex items-center gap-2.5'>
+                        <span
+                          className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold text-white ${member.avatarColor}`}
+                        >
+                          {member.name.slice(0, 1)}
+                        </span>
+                        <div>
+                          <div className='text-xs font-semibold text-slate-900'>
+                            {member.name}
+                          </div>
+                          <div className='text-[11px] text-slate-500'>
+                            Paid{" "}
+                            {formatCurrency(totalPaid, displayCurrency)} · Used{" "}
+                            {formatCurrency(totalBenefited, displayCurrency)}
+                          </div>
+                          {showOrigSubtext && rawMemberExp && (
+                            <div className='font-mono text-[10px] text-slate-400'>
+                              Paid{" "}
+                              {formatCurrency(
+                                rawMemberExp.totalPaid,
+                                activeCurrency,
+                              )}{" "}
+                              · Used{" "}
+                              {formatCurrency(
+                                rawMemberExp.totalBenefited,
+                                activeCurrency,
+                              )}{" "}
+                              {activeCurrency}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className='text-right font-mono text-xs font-bold'>
+                        {netBalance > epsilon ? (
+                          <span className='text-emerald-600'>
+                            +{formatCurrency(netBalance, displayCurrency)}
+                          </span>
+                        ) : netBalance < -epsilon ? (
+                          <span className='text-rose-600'>
+                            -
+                            {formatCurrency(
+                              Math.abs(netBalance),
+                              displayCurrency,
+                            )}
+                          </span>
+                        ) : (
+                          <span className='text-slate-400'>Settled</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                },
+              )}
+            </div>
+
+            {/* Total Group Expenditure Footer */}
+            <div className='mt-4 flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5 text-xs'>
+              <span className='font-semibold text-slate-700'>
+                Total Expenditure
+              </span>
+              <span className='font-mono text-[11px] font-semibold text-slate-800'>
+                Paid{" "}
+                {formatCurrency(
+                  totalGroupExpenditure.paid,
+                  isTranslating ? translateCurrency : activeCurrency,
+                )}{" "}
+                · Used{" "}
+                {formatCurrency(
+                  totalGroupExpenditure.used,
+                  isTranslating ? translateCurrency : activeCurrency,
+                )}
+              </span>
+            </div>
+          </div>
+
           {/* Net Balances Card */}
           <div className='rounded-2xl border border-slate-200 bg-white p-5 shadow-xs'>
             <div className='flex items-center justify-between gap-2 border-b border-slate-100 pb-3.5'>
@@ -2343,7 +2653,13 @@ export default function GroupBudgetPage() {
                   </label>
                   <select
                     value={category}
-                    onChange={(e) => setCategory(e.target.value)}
+                    onChange={(e) => {
+                      const nextCat = e.target.value;
+                      setCategory(nextCat);
+                      if (nextCat === "Exchange") {
+                        setDraftIsExchange(true);
+                      }
+                    }}
                     className='mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:border-slate-900 focus:outline-none'
                   >
                     {CATEGORIES.map((cat) => (
@@ -2367,19 +2683,36 @@ export default function GroupBudgetPage() {
                 </div>
               </div>
 
-              <label className='inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100/70'>
-                <input
-                  type='checkbox'
-                  checked={draftHidden}
-                  onChange={(e) => setDraftHidden(e.target.checked)}
-                  className='h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900'
-                />
-                <EyeOff className='h-3.5 w-3.5 text-slate-500' />
-                <span>
-                  Hide this transaction from the ledger (excludes it from Group
-                  Balances &amp; Settlements)
-                </span>
-              </label>
+              <div className='flex flex-col gap-2'>
+                <label className='inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100/70'>
+                  <input
+                    type='checkbox'
+                    checked={draftIsExchange}
+                    onChange={(e) => setDraftIsExchange(e.target.checked)}
+                    className='h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600'
+                  />
+                  <ArrowLeftRight className='h-3.5 w-3.5 text-indigo-600' />
+                  <span>
+                    Mark solely as an exchange / transfer not paid to a merchant
+                    (included in Group Balances, excluded from Group
+                    Expenditure)
+                  </span>
+                </label>
+
+                <label className='inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100/70'>
+                  <input
+                    type='checkbox'
+                    checked={draftHidden}
+                    onChange={(e) => setDraftHidden(e.target.checked)}
+                    className='h-3.5 w-3.5 rounded border-slate-300 text-slate-900 focus:ring-slate-900'
+                  />
+                  <EyeOff className='h-3.5 w-3.5 text-slate-500' />
+                  <span>
+                    Hide this transaction from the ledger (excludes it from
+                    Group Balances &amp; Settlements)
+                  </span>
+                </label>
+              </div>
 
               {/* Quick Smart Actions Bar */}
               <div className='flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5'>

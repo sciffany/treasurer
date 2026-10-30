@@ -25,6 +25,7 @@ export const VALID_CATEGORIES = [
   "Transport",
   "Utilities",
   "Entertainment",
+  "Exchange",
   "Other",
 ] as const;
 
@@ -45,6 +46,7 @@ export interface SerializedTransaction {
   category: string;
   notes?: string;
   hidden?: boolean;
+  isExchange?: boolean;
   entries: SerializedTransactionEntry[];
 }
 
@@ -55,6 +57,7 @@ export interface ParsedTransactionJsonResult {
   category?: string;
   notes?: string;
   hidden?: boolean;
+  isExchange?: boolean;
   entries: TransactionEntry[];
   newMembersToCreate: { id: string; name: string }[];
 }
@@ -175,6 +178,7 @@ export function serializeTransactionToJson(
     category: string;
     notes?: string;
     hidden?: boolean;
+    isExchange?: boolean;
     entries: TransactionEntry[];
   },
   members: Member[]
@@ -187,6 +191,7 @@ export function serializeTransactionToJson(
     category: tx.category,
     ...(tx.notes ? { notes: tx.notes } : {}),
     ...(tx.hidden ? { hidden: true } : {}),
+    ...(typeof tx.isExchange === "boolean" ? { isExchange: tx.isExchange } : {}),
     entries: tx.entries.map((e) => ({
       id: e.id,
       role: e.role,
@@ -232,6 +237,7 @@ export function parseTransactionJson(
   let category: string | undefined;
   let notes: string | undefined;
   let hidden: boolean | undefined;
+  let isExchange: boolean | undefined;
 
   if (Array.isArray(raw)) {
     rawEntries = raw;
@@ -256,6 +262,11 @@ export function parseTransactionJson(
     }
     if (typeof obj.hidden === "boolean") {
       hidden = obj.hidden;
+    }
+    if (typeof obj.isExchange === "boolean") {
+      isExchange = obj.isExchange;
+    } else if (typeof obj.exchange === "boolean") {
+      isExchange = obj.exchange;
     }
 
     if (Array.isArray(obj.entries)) {
@@ -350,6 +361,7 @@ export function parseTransactionJson(
     category,
     notes,
     hidden,
+    isExchange,
     entries,
     newMembersToCreate: Array.from(pendingNewMembers.values()),
   };

@@ -55,5 +55,6 @@ export interface Transaction {
   category: string;
   notes?: string;
   hidden?: boolean;
+  isExchange?: boolean;
   entries: TransactionEntry[];
 }
