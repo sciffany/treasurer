@@ -412,7 +412,7 @@ export default function GroupBudgetPage() {
     return map;
   }, [rawActiveBalances]);
 
-  // Group Expenditure (Paid X · Used Y excluding exchange transactions not paid to a merchant)
+  // Group Expenditure (Paid & Used excluding exchange transactions not paid to a merchant)
   const { balances: expenditures } = useMemo(() => {
     if (isTranslating) {
       return computeConvertedExpenditure(
@@ -435,52 +435,6 @@ export default function GroupBudgetPage() {
     ledgerCurrencies.length,
     translateCurrency,
     getRateToTarget,
-  ]);
-
-  const rawActiveExpenditures = useMemo(
-    () => computeExpenditureByCurrency(transactions, members, activeCurrency),
-    [transactions, members, activeCurrency]
-  );
-  const rawExpenditureByMemberId = useMemo(() => {
-    const map = new Map<
-      string,
-      (typeof rawActiveExpenditures.balances)[number]
-    >();
-    rawActiveExpenditures.balances.forEach((b) => map.set(b.member.id, b));
-    return map;
-  }, [rawActiveExpenditures]);
-
-  const totalGroupExpenditure = useMemo(() => {
-    const displayCurrency = isTranslating ? translateCurrency : activeCurrency;
-    const decimals = getCurrencyInfo(displayCurrency).decimal_digits;
-    const paid = roundCents(
-      expenditures.reduce((sum, b) => sum + b.totalPaid, 0),
-      decimals
-    );
-    const used = roundCents(
-      expenditures.reduce((sum, b) => sum + b.totalBenefited, 0),
-      decimals
-    );
-    return { paid, used };
-  }, [expenditures, isTranslating, translateCurrency, activeCurrency]);
-
-  const excludedExchangeCount = useMemo(() => {
-    return transactions.filter((tx) => {
-      if (tx.hidden) return false;
-      if (
-        !(isTranslating && combineAllInLedger && ledgerCurrencies.length > 1) &&
-        tx.currency !== activeCurrency
-      ) {
-        return false;
-      }
-      return isExchangeTransaction(tx);
-    }).length;
-  }, [
-    transactions,
-    isTranslating,
-    combineAllInLedger,
-    ledgerCurrencies.length,
-    activeCurrency,
   ]);
 
   // Composer summary
@@ -1050,7 +1004,7 @@ export default function GroupBudgetPage() {
     <div className='min-h-screen bg-slate-50 pb-20'>
       {/* Top Header */}
       <header className='sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur'>
-        <div className='mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-4'>
+        <div className='mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:gap-4 sm:px-6 sm:py-4'>
           <div className='flex items-center gap-3'>
             <div className='flex h-10 w-10 items-center justify-center rounded-xl bg-slate-900 text-white shadow-sm'>
               <Wallet className='h-5 w-5' />
@@ -1062,7 +1016,7 @@ export default function GroupBudgetPage() {
             </div>
           </div>
 
-          <div className='flex flex-wrap items-center gap-2.5'>
+          <div className='flex flex-wrap items-center gap-2'>
             <input
               ref={fileInputRef}
               type='file'
@@ -1273,7 +1227,7 @@ export default function GroupBudgetPage() {
         </div>
       )}
 
-      <main className='mx-auto mt-8 grid max-w-6xl grid-cols-1 gap-8 px-6 lg:grid-cols-12'>
+      <main className='mx-auto mt-6 grid max-w-6xl grid-cols-1 gap-6 px-4 sm:mt-8 sm:gap-8 sm:px-6 lg:grid-cols-12'>
         {/* Left Column: Transactions List (8 cols) */}
         <section className='space-y-4 lg:col-span-8'>
           <div className='flex flex-wrap items-center justify-between gap-3'>
@@ -1394,9 +1348,9 @@ export default function GroupBudgetPage() {
                 {/* Main Transaction Row */}
                 <div
                   onClick={() => toggleExpand(tx.id)}
-                  className='flex cursor-pointer items-center justify-between gap-3 px-4 py-3.5 transition hover:bg-slate-50/80'
+                  className='flex cursor-pointer flex-wrap items-start justify-between gap-3 px-4 py-3.5 transition hover:bg-slate-50/80 sm:items-center sm:px-5 sm:py-4'
                 >
-                  <div className='flex min-w-0 flex-1 items-start gap-3'>
+                  <div className='flex min-w-[200px] flex-1 items-start gap-3'>
                     <div
                       className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
                         isHidden
@@ -1448,7 +1402,7 @@ export default function GroupBudgetPage() {
                       </div>
 
                       {tx.notes && (
-                        <p className='mt-0.5 truncate text-xs text-slate-500'>
+                        <p className='mt-0.5 break-words text-xs text-slate-500'>
                           {tx.notes}
                         </p>
                       )}
@@ -1473,10 +1427,10 @@ export default function GroupBudgetPage() {
                     </div>
                   </div>
 
-                  <div className='flex shrink-0 items-center gap-2'>
-                    <div className='text-right leading-tight'>
+                  <div className='flex w-full flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 sm:w-auto sm:justify-end sm:gap-3 sm:border-t-0 sm:pt-0'>
+                    <div className='text-left leading-tight sm:text-right'>
                       <div
-                        className={` whitespace-nowrap text-xs font-bold ${
+                        className={`text-sm font-bold ${
                           isHidden
                             ? "text-slate-500 line-through"
                             : "text-slate-900"
@@ -1490,23 +1444,23 @@ export default function GroupBudgetPage() {
                         {formatDisplayedAmount(summary.totalPaid, tx.currency)}
                       </div>
                       {txTranslated && (
-                        <div className='whitespace-nowrap font-mono text-[9px] text-slate-400'>
+                        <div className='font-mono text-[10px] text-slate-400'>
                           orig: {formatCurrency(summary.totalPaid, tx.currency)}{" "}
                           {tx.currency}
                         </div>
                       )}
                       {isHidden ? (
-                        <span className='inline-flex items-center gap-0.5 whitespace-nowrap text-[10px] font-medium text-slate-500'>
-                          Excluded
+                        <span className='inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-500'>
+                          Excluded from balances
                         </span>
                       ) : summary.isBalanced ? (
-                        <span className='inline-flex items-center gap-0.5 whitespace-nowrap text-[10px] font-medium text-emerald-600'>
-                          <CheckCircle2 className='h-2.5 w-2.5' />
+                        <span className='inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600'>
+                          <CheckCircle2 className='h-3 w-3' />
                           Balanced
                         </span>
                       ) : (
-                        <span className='inline-flex items-center gap-0.5 whitespace-nowrap text-[10px] font-medium text-amber-600'>
-                          <AlertCircle className='h-2.5 w-2.5' />
+                        <span className='inline-flex items-center gap-1 text-[11px] font-medium text-amber-600'>
+                          <AlertCircle className='h-3 w-3' />
                           Diff:{" "}
                           {formatDisplayedAmount(
                             Math.abs(summary.discrepancy),
@@ -1516,14 +1470,14 @@ export default function GroupBudgetPage() {
                       )}
                     </div>
 
-                    <div className='flex shrink-0 items-center gap-0.5'>
+                    <div className='flex flex-wrap items-center gap-1'>
                       <button
                         type='button'
                         onClick={(e) => {
                           e.stopPropagation();
                           handleToggleExchangeTransaction(tx.id);
                         }}
-                        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition ${
+                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium transition ${
                           isExchange
                             ? "border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
                             : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
@@ -1534,7 +1488,7 @@ export default function GroupBudgetPage() {
                             : "Mark as an exchange not paid to a merchant (exclude from Group Expenditure)"
                         }
                       >
-                        <ArrowLeftRight className='h-3 w-3' />
+                        <ArrowLeftRight className='h-3.5 w-3.5' />
                         Exchange
                       </button>
                       <button
@@ -1543,7 +1497,7 @@ export default function GroupBudgetPage() {
                           e.stopPropagation();
                           handleToggleHideTransaction(tx.id);
                         }}
-                        className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition ${
+                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium transition ${
                           isHidden
                             ? "border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
                             : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
@@ -1556,12 +1510,12 @@ export default function GroupBudgetPage() {
                       >
                         {isHidden ? (
                           <>
-                            <Eye className='h-3 w-3' />
+                            <Eye className='h-3.5 w-3.5' />
                             Unhide
                           </>
                         ) : (
                           <>
-                            <EyeOff className='h-3 w-3' />
+                            <EyeOff className='h-3.5 w-3.5' />
                             Hide
                           </>
                         )}
@@ -1572,7 +1526,7 @@ export default function GroupBudgetPage() {
                           e.stopPropagation();
                           openEditTransactionModal(tx);
                         }}
-                        className='rounded-md px-1.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                        className='rounded-lg px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                       >
                         Edit
                       </button>
@@ -1582,16 +1536,16 @@ export default function GroupBudgetPage() {
                           e.stopPropagation();
                           handleDeleteTransaction(tx.id);
                         }}
-                        className='rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600'
+                        className='rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600'
                         title='Delete transaction'
                       >
-                        <Trash2 className='h-3.5 w-3.5' />
+                        <Trash2 className='h-4 w-4' />
                       </button>
-                      <div className='p-0.5 text-slate-400'>
+                      <div className='p-1 text-slate-400'>
                         {isExpanded ? (
-                          <ChevronUp className='h-3.5 w-3.5' />
+                          <ChevronUp className='h-4 w-4' />
                         ) : (
-                          <ChevronDown className='h-3.5 w-3.5' />
+                          <ChevronDown className='h-4 w-4' />
                         )}
                       </div>
                     </div>
@@ -1648,7 +1602,7 @@ export default function GroupBudgetPage() {
                             key={item.member.id}
                             className='rounded-xl border border-slate-200/90 bg-white p-3 shadow-2xs'
                           >
-                            <div className='flex items-center justify-between gap-2 border-b border-slate-100 pb-2'>
+                            <div className='flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2'>
                               <div className='flex items-center gap-2 min-w-0'>
                                 <span
                                   className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${item.member.avatarColor}`}
@@ -1659,22 +1613,26 @@ export default function GroupBudgetPage() {
                                   <div className='truncate text-xs font-bold text-slate-900'>
                                     {item.member.name}
                                   </div>
-                                  <div className='text-[10px] text-slate-500'>
-                                    Paid{" "}
-                                    {formatDisplayedAmount(
-                                      item.paid,
-                                      tx.currency,
-                                    )}{" "}
-                                    · Share{" "}
-                                    {formatDisplayedAmount(
-                                      item.benefited,
-                                      tx.currency,
-                                    )}
+                                  <div className='text-[10px] leading-snug text-slate-500'>
+                                    <div>
+                                      Paid{" "}
+                                      {formatDisplayedAmount(
+                                        item.paid,
+                                        tx.currency,
+                                      )}
+                                    </div>
+                                    <div>
+                                      Share{" "}
+                                      {formatDisplayedAmount(
+                                        item.benefited,
+                                        tx.currency,
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               </div>
 
-                              <div className='text-right font-mono text-xs font-bold shrink-0'>
+                              <div className='ml-auto text-right font-mono text-xs font-bold'>
                                 {isNetCreditor ? (
                                   <span className='inline-flex items-center rounded-md bg-emerald-50 px-2 py-0.5 text-emerald-700'>
                                     Credit +
@@ -1711,7 +1669,7 @@ export default function GroupBudgetPage() {
                                   return (
                                     <div
                                       key={cIdx}
-                                      className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-xs ${
+                                      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-xs ${
                                         isCredit
                                           ? "bg-emerald-50/70 text-emerald-900"
                                           : "bg-rose-50/70 text-rose-900"
@@ -1743,7 +1701,7 @@ export default function GroupBudgetPage() {
                                           )}
                                         </span>
                                       </div>
-                                      <div className='text-right font-mono text-xs font-bold shrink-0'>
+                                      <div className='ml-auto shrink-0 text-right font-mono text-xs font-bold'>
                                         <span
                                           className={
                                             isCredit
@@ -1798,7 +1756,7 @@ export default function GroupBudgetPage() {
                             return (
                               <div
                                 key={entry.id}
-                                className='flex items-center justify-between gap-2 rounded-lg bg-emerald-50/50 px-2.5 py-1.5 text-xs'
+                                className='flex flex-wrap items-center justify-between gap-2 rounded-lg bg-emerald-50/50 px-2.5 py-1.5 text-xs'
                               >
                                 <div className='flex flex-wrap items-center gap-2'>
                                   <span
@@ -1825,7 +1783,7 @@ export default function GroupBudgetPage() {
                                     </span>
                                   )}
                                 </div>
-                                <div className='text-right font-mono'>
+                                <div className='ml-auto text-right font-mono'>
                                   <div className='font-semibold text-emerald-700'>
                                     +
                                     {formatDisplayedAmount(
@@ -1867,9 +1825,9 @@ export default function GroupBudgetPage() {
                             return (
                               <div
                                 key={entry.id}
-                                className='flex items-center justify-between gap-2 rounded-lg bg-sky-50/50 px-2.5 py-1.5 text-xs'
+                                className='flex flex-wrap items-center justify-between gap-2 rounded-lg bg-sky-50/50 px-2.5 py-1.5 text-xs'
                               >
-                                <div className='flex items-center gap-2'>
+                                <div className='flex flex-wrap items-center gap-2'>
                                   <span
                                     className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ${
                                       m?.avatarColor ?? "bg-slate-500"
@@ -1888,7 +1846,7 @@ export default function GroupBudgetPage() {
                                     )}
                                   </div>
                                 </div>
-                                <div className='text-right font-mono'>
+                                <div className='ml-auto text-right font-mono'>
                                   <div className='font-semibold text-sky-700'>
                                     -
                                     {formatDisplayedAmount(
@@ -1921,26 +1879,26 @@ export default function GroupBudgetPage() {
         {/* Right Column: Group Expenditure, Net Balances & Group Members (4 cols) */}
         <aside className='space-y-6 lg:col-span-4'>
           {/* Group Expenditure Card */}
-          <div className='rounded-2xl border border-slate-200 bg-white p-4 shadow-xs'>
-            <div className='flex items-center justify-between gap-1.5 border-b border-slate-100 pb-3'>
-              <div className='flex min-w-0 items-center gap-1.5'>
-                <Receipt className='h-3.5 w-3.5 shrink-0 text-slate-700' />
-                <h2 className='truncate whitespace-nowrap text-xs font-semibold text-slate-900'>
+          <div className='rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:p-5'>
+            <div className='flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3'>
+              <div className='flex items-center gap-2'>
+                <Receipt className='h-4 w-4 shrink-0 text-slate-700' />
+                <h2 className='text-sm font-semibold text-slate-900'>
                   Group Expenditure
                 </h2>
               </div>
-              <div className='flex shrink-0 items-center gap-1'>
+              <div className='flex flex-wrap items-center gap-1.5'>
                 <button
                   type='button'
                   onClick={handleToggleTranslate}
-                  className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition ${
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
                     isTranslating
                       ? "border-indigo-300 bg-indigo-50 text-indigo-700"
                       : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   }`}
                   title='Temporarily translate displayed currencies'
                 >
-                  <ArrowLeftRight className='h-2.5 w-2.5' />
+                  <ArrowLeftRight className='h-3 w-3' />
                   Translate
                 </button>
                 <select
@@ -1960,7 +1918,7 @@ export default function GroupBudgetPage() {
                     }
                   }}
                   aria-label='Expenditure currency'
-                  className='max-w-[105px] truncate rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-700'
+                  className='max-w-[130px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs font-semibold text-slate-700'
                 >
                   {isTranslating && ledgerCurrencies.length > 1 && (
                     <option value='ALL'>All ({translateCurrency})</option>
@@ -1974,16 +1932,8 @@ export default function GroupBudgetPage() {
               </div>
             </div>
 
-            <p className='mt-2.5 text-[11px] text-slate-500'>
-              Merchant spending only — excludes transactions marked solely as an
-              exchange
-              {excludedExchangeCount > 0
-                ? ` (${excludedExchangeCount} excluded)`
-                : "."}
-            </p>
-
             {isTranslating && (
-              <div className='mt-2.5 flex items-center justify-between rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
+              <div className='mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
                 <span>
                   Showing in <strong>{translateCurrency}</strong>
                   {combineAllInLedger && ledgerCurrencies.length > 1
@@ -2006,124 +1956,61 @@ export default function GroupBudgetPage() {
             )}
 
             <div className='mt-3 space-y-2.5'>
-              {expenditures.map(
-                ({ member, totalPaid, totalBenefited, netBalance }) => {
-                  const displayCurrency = isTranslating
-                    ? translateCurrency
-                    : activeCurrency;
-                  const epsilon =
-                    0.5 * 10 ** -getCurrencyInfo(displayCurrency).decimal_digits;
-                  const rawMemberExp = rawExpenditureByMemberId.get(member.id);
-                  const showOrigSubtext =
-                    isTranslating &&
-                    !(combineAllInLedger && ledgerCurrencies.length > 1) &&
-                    isAmountTranslated(activeCurrency) &&
-                    rawMemberExp &&
-                    (rawMemberExp.totalPaid > 0.005 ||
-                      rawMemberExp.totalBenefited > 0.005);
+              {expenditures.map(({ member, totalPaid, totalBenefited }) => {
+                const displayCurrency = isTranslating
+                  ? translateCurrency
+                  : activeCurrency;
 
-                  return (
-                    <div
-                      key={member.id}
-                      className='flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2'
+                return (
+                  <div
+                    key={member.id}
+                    className='flex flex-wrap items-center gap-2.5 rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5'
+                  >
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${member.avatarColor}`}
                     >
-                      <div className='flex min-w-0 items-center gap-2'>
-                        <span
-                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${member.avatarColor}`}
-                        >
-                          {member.name.slice(0, 1)}
-                        </span>
-                        <div className='min-w-0'>
-                          <div className='truncate text-xs font-semibold text-slate-900'>
-                            {member.name}
-                          </div>
-                          <div className='whitespace-nowrap text-[10px] text-slate-500'>
-                            Paid{" "}
-                            {formatCurrency(totalPaid, displayCurrency)} · Used{" "}
-                            {formatCurrency(totalBenefited, displayCurrency)}
-                          </div>
-                          {showOrigSubtext && rawMemberExp && (
-                            <div className='whitespace-nowrap font-mono text-[9px] text-slate-400'>
-                              Paid{" "}
-                              {formatCurrency(
-                                rawMemberExp.totalPaid,
-                                activeCurrency,
-                              )}{" "}
-                              · Used{" "}
-                              {formatCurrency(
-                                rawMemberExp.totalBenefited,
-                                activeCurrency,
-                              )}{" "}
-                              {activeCurrency}
-                            </div>
-                          )}
+                      {member.name.slice(0, 1)}
+                    </span>
+                    <div className='min-w-0 flex-1'>
+                      <div className='text-xs font-semibold text-slate-900'>
+                        {member.name}
+                      </div>
+                      <div className='text-[11px] leading-snug text-slate-500'>
+                        <div>
+                          Paid {formatCurrency(totalPaid, displayCurrency)}
+                        </div>
+                        <div>
+                          Used {formatCurrency(totalBenefited, displayCurrency)}
                         </div>
                       </div>
-
-                      <div className='shrink-0 whitespace-nowrap text-right font-mono text-[11px] font-bold'>
-                        {netBalance > epsilon ? (
-                          <span className='text-emerald-600'>
-                            +{formatCurrency(netBalance, displayCurrency)}
-                          </span>
-                        ) : netBalance < -epsilon ? (
-                          <span className='text-rose-600'>
-                            -
-                            {formatCurrency(
-                              Math.abs(netBalance),
-                              displayCurrency,
-                            )}
-                          </span>
-                        ) : (
-                          <span className='text-slate-400'>Settled</span>
-                        )}
-                      </div>
                     </div>
-                  );
-                },
-              )}
-            </div>
-
-            {/* Total Group Expenditure Footer */}
-            <div className='mt-3.5 flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px]'>
-              <span className='shrink-0 font-semibold text-slate-700'>
-                Total Expenditure
-              </span>
-              <span className='whitespace-nowrap font-mono text-[10px] font-semibold text-slate-800'>
-                Paid{" "}
-                {formatCurrency(
-                  totalGroupExpenditure.paid,
-                  isTranslating ? translateCurrency : activeCurrency,
-                )}{" "}
-                · Used{" "}
-                {formatCurrency(
-                  totalGroupExpenditure.used,
-                  isTranslating ? translateCurrency : activeCurrency,
-                )}
-              </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
           {/* Net Balances Card */}
-          <div className='rounded-2xl border border-slate-200 bg-white p-4 shadow-xs'>
-            <div className='flex items-center justify-between gap-1.5 border-b border-slate-100 pb-3'>
-              <div className='flex min-w-0 items-center gap-1.5'>
-                <Scale className='h-3.5 w-3.5 shrink-0 text-slate-700' />
-                <h2 className='truncate whitespace-nowrap text-xs font-semibold text-slate-900'>
+          <div className='rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:p-5'>
+            <div className='flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3'>
+              <div className='flex items-center gap-2'>
+                <Scale className='h-4 w-4 shrink-0 text-slate-700' />
+                <h2 className='text-sm font-semibold text-slate-900'>
                   Group Balances
                 </h2>
               </div>
-              <div className='flex shrink-0 items-center gap-1'>
+              <div className='flex flex-wrap items-center gap-1.5'>
                 <button
                   type='button'
                   onClick={handleToggleTranslate}
-                  className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition ${
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition ${
                     isTranslating
                       ? "border-indigo-300 bg-indigo-50 text-indigo-700"
                       : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   }`}
                   title='Temporarily translate displayed currencies'
                 >
-                  <ArrowLeftRight className='h-2.5 w-2.5' />
+                  <ArrowLeftRight className='h-3 w-3' />
                   Translate
                 </button>
                 <select
@@ -2143,7 +2030,7 @@ export default function GroupBudgetPage() {
                     }
                   }}
                   aria-label='Ledger currency'
-                  className='max-w-[105px] truncate rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-700'
+                  className='max-w-[130px] truncate rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs font-semibold text-slate-700'
                 >
                   {isTranslating && ledgerCurrencies.length > 1 && (
                     <option value='ALL'>All ({translateCurrency})</option>
@@ -2158,7 +2045,7 @@ export default function GroupBudgetPage() {
             </div>
 
             {isTranslating && (
-              <div className='mt-3 flex items-center justify-between rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
+              <div className='mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-indigo-50/70 px-3 py-1.5 text-[11px] text-indigo-800'>
                 <span>
                   Showing in <strong>{translateCurrency}</strong>
                   {combineAllInLedger && ledgerCurrencies.length > 1
@@ -2199,27 +2086,31 @@ export default function GroupBudgetPage() {
                   return (
                     <div
                       key={member.id}
-                      className='flex items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/60 px-3 py-2'
+                      className='flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/60 px-3.5 py-2.5'
                     >
-                      <div className='flex min-w-0 items-center gap-2'>
+                      <div className='flex min-w-0 items-center gap-2.5'>
                         <span
-                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${member.avatarColor}`}
+                          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${member.avatarColor}`}
                         >
                           {member.name.slice(0, 1)}
                         </span>
                         <div className='min-w-0'>
-                          <div className='truncate text-xs font-semibold text-slate-900'>
+                          <div className='text-xs font-semibold text-slate-900'>
                             {member.name}
                           </div>
-                          <div className='whitespace-nowrap text-[10px] text-slate-500'>
-                            Paid{" "}
-                            {formatCurrency(totalPaid, displayCurrency)} · Used{" "}
-                            {formatCurrency(totalBenefited, displayCurrency)}
+                          <div className='text-[11px] leading-snug text-slate-500'>
+                            <div>
+                              Paid {formatCurrency(totalPaid, displayCurrency)}
+                            </div>
+                            <div>
+                              Used{" "}
+                              {formatCurrency(totalBenefited, displayCurrency)}
+                            </div>
                           </div>
                         </div>
                       </div>
 
-                      <div className='shrink-0 whitespace-nowrap text-right font-mono text-[11px] font-bold'>
+                      <div className='ml-auto text-right font-mono text-xs font-bold'>
                         {netBalance > epsilon ? (
                           <span className='text-emerald-600'>
                             +{formatCurrency(netBalance, displayCurrency)}
@@ -2236,7 +2127,7 @@ export default function GroupBudgetPage() {
                           <span className='text-slate-400'>Settled</span>
                         )}
                         {showOrigSubtext && rawMemberBal && (
-                          <div className='whitespace-nowrap text-[9px] font-normal text-slate-400'>
+                          <div className='text-[10px] font-normal text-slate-400'>
                             {rawMemberBal.netBalance > 0 ? "+" : "-"}
                             {formatCurrency(
                               Math.abs(rawMemberBal.netBalance),
@@ -2279,14 +2170,14 @@ export default function GroupBudgetPage() {
                     return (
                       <div
                         key={idx}
-                        className='flex items-center justify-between rounded-lg bg-amber-50/70 px-3 py-2 text-xs'
+                        className='flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50/70 px-3 py-2 text-xs'
                       >
-                        <div className='flex items-center gap-1.5 font-medium text-slate-800'>
+                        <div className='flex flex-wrap items-center gap-1.5 font-medium text-slate-800'>
                           <span>{from?.name}</span>
                           <ArrowRight className='h-3.5 w-3.5 text-slate-400' />
                           <span>{to?.name}</span>
                         </div>
-                        <span className='font-mono font-bold text-amber-900'>
+                        <span className='ml-auto text-right font-mono font-bold text-amber-900'>
                           {formatCurrency(s.amount, displayCurrency)}
                         </span>
                       </div>
@@ -2437,7 +2328,7 @@ export default function GroupBudgetPage() {
       {/* Transaction Composer Modal */}
       {isComposerOpen && (
         <div className='fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs'>
-          <div className='max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl'>
+          <div className='max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl'>
             <div className='flex items-center justify-between border-b border-slate-100 pb-4'>
               <div>
                 <h2 className='text-base font-bold text-slate-900'>
@@ -2769,7 +2660,7 @@ export default function GroupBudgetPage() {
                       .map((entry) => (
                         <div
                           key={entry.id}
-                          className='grid grid-cols-12 items-center gap-2 rounded-lg border border-emerald-200/70 bg-white p-2'
+                          className='flex flex-wrap items-center gap-2 rounded-lg border border-emerald-200/70 bg-white p-2.5'
                         >
                           <select
                             value={entry.memberId}
@@ -2778,7 +2669,7 @@ export default function GroupBudgetPage() {
                                 memberId: e.target.value,
                               })
                             }
-                            className='col-span-3 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium'
+                            className='min-w-[95px] flex-1 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium'
                           >
                             {!memberMap.has(entry.memberId) && (
                               <option value={entry.memberId}>
@@ -2798,7 +2689,7 @@ export default function GroupBudgetPage() {
                                 paymentMethod: e.target.value as PaymentMethod,
                               })
                             }
-                            className='col-span-3 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-700'
+                            className='min-w-[105px] flex-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-700'
                           >
                             {PAYMENT_METHODS.map((pm) => (
                               <option key={pm} value={pm}>
@@ -2815,36 +2706,38 @@ export default function GroupBudgetPage() {
                                 label: e.target.value,
                               })
                             }
-                            className='col-span-3 rounded-md border border-slate-200 px-2 py-1.5 text-xs'
+                            className='w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs'
                           />
-                          <input
-                            type='number'
-                            step={
-                              getCurrencyInfo(currency).decimal_digits === 0
-                                ? "1"
-                                : getCurrencyInfo(currency).decimal_digits === 3
-                                  ? "0.001"
-                                  : "0.01"
-                            }
-                            min='0'
-                            placeholder={(0).toFixed(
-                              getCurrencyInfo(currency).decimal_digits
-                            )}
-                            value={entry.amount || ""}
-                            onChange={(e) =>
-                              updateDraftEntry(entry.id, {
-                                amount: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className='col-span-2 rounded-md border border-slate-200 px-2 py-1.5 text-right font-mono text-xs font-semibold'
-                          />
-                          <button
-                            type='button'
-                            onClick={() => removeDraftEntry(entry.id)}
-                            className='col-span-1 flex justify-center text-slate-400 hover:text-rose-600'
-                          >
-                            <Trash2 className='h-3.5 w-3.5' />
-                          </button>
+                          <div className='flex w-full items-center gap-1.5'>
+                            <input
+                              type='number'
+                              step={
+                                getCurrencyInfo(currency).decimal_digits === 0
+                                  ? "1"
+                                  : getCurrencyInfo(currency).decimal_digits === 3
+                                    ? "0.001"
+                                    : "0.01"
+                              }
+                              min='0'
+                              placeholder={(0).toFixed(
+                                getCurrencyInfo(currency).decimal_digits
+                              )}
+                              value={entry.amount || ""}
+                              onChange={(e) =>
+                                updateDraftEntry(entry.id, {
+                                  amount: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className='min-w-0 flex-1 rounded-md border border-slate-200 px-2.5 py-1.5 text-right font-mono text-sm font-semibold'
+                            />
+                            <button
+                              type='button'
+                              onClick={() => removeDraftEntry(entry.id)}
+                              className='shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600'
+                            >
+                              <Trash2 className='h-3.5 w-3.5' />
+                            </button>
+                          </div>
                         </div>
                       ))}
                   </div>
@@ -2881,7 +2774,7 @@ export default function GroupBudgetPage() {
                       .map((entry) => (
                         <div
                           key={entry.id}
-                          className='grid grid-cols-12 items-center gap-2 rounded-lg border border-sky-200/70 bg-white p-2'
+                          className='flex flex-wrap items-center gap-2 rounded-lg border border-sky-200/70 bg-white p-2.5'
                         >
                           <select
                             value={entry.memberId}
@@ -2890,7 +2783,7 @@ export default function GroupBudgetPage() {
                                 memberId: e.target.value,
                               })
                             }
-                            className='col-span-4 rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium'
+                            className='w-full rounded-md border border-slate-200 px-2 py-1.5 text-xs font-medium'
                           >
                             {!memberMap.has(entry.memberId) && (
                               <option value={entry.memberId}>
@@ -2912,36 +2805,38 @@ export default function GroupBudgetPage() {
                                 label: e.target.value,
                               })
                             }
-                            className='col-span-4 rounded-md border border-slate-200 px-2 py-1.5 text-xs'
+                            className='w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs'
                           />
-                          <input
-                            type='number'
-                            step={
-                              getCurrencyInfo(currency).decimal_digits === 0
-                                ? "1"
-                                : getCurrencyInfo(currency).decimal_digits === 3
-                                  ? "0.001"
-                                  : "0.01"
-                            }
-                            min='0'
-                            placeholder={(0).toFixed(
-                              getCurrencyInfo(currency).decimal_digits
-                            )}
-                            value={entry.amount || ""}
-                            onChange={(e) =>
-                              updateDraftEntry(entry.id, {
-                                amount: parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            className='col-span-3 rounded-md border border-slate-200 px-2 py-1.5 text-right font-mono text-xs font-semibold'
-                          />
-                          <button
-                            type='button'
-                            onClick={() => removeDraftEntry(entry.id)}
-                            className='col-span-1 flex justify-center text-slate-400 hover:text-rose-600'
-                          >
-                            <Trash2 className='h-3.5 w-3.5' />
-                          </button>
+                          <div className='flex w-full items-center gap-1.5'>
+                            <input
+                              type='number'
+                              step={
+                                getCurrencyInfo(currency).decimal_digits === 0
+                                  ? "1"
+                                  : getCurrencyInfo(currency).decimal_digits === 3
+                                    ? "0.001"
+                                    : "0.01"
+                              }
+                              min='0'
+                              placeholder={(0).toFixed(
+                                getCurrencyInfo(currency).decimal_digits
+                              )}
+                              value={entry.amount || ""}
+                              onChange={(e) =>
+                                updateDraftEntry(entry.id, {
+                                  amount: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className='min-w-0 flex-1 rounded-md border border-slate-200 px-2.5 py-1.5 text-right font-mono text-sm font-semibold'
+                            />
+                            <button
+                              type='button'
+                              onClick={() => removeDraftEntry(entry.id)}
+                              className='shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600'
+                            >
+                              <Trash2 className='h-3.5 w-3.5' />
+                            </button>
+                          </div>
                         </div>
                       ))}
                   </div>
